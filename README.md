@@ -2,8 +2,6 @@
 
 A private, local-first desktop workspace for Windows. It keeps logins, notes, tasks, calendar items, income, and subscriptions in one encrypted vault on your own computer. No account, no cloud sync, no telemetry.
 
-For the product goals and the problem it solves, see [PROJECT_BRIEF.md](PROJECT_BRIEF.md). The longer requirements and design documents are in [`outputs/`](outputs/).
-
 ## Features
 
 - **Credential vault:** save logins with username, password, website, tags, folders, and favorites. Copy a password to the clipboard, and it clears after a set time. Grid or list view.
@@ -54,25 +52,19 @@ Backups you export go wherever you choose. CSV exports are plain text.
 
 To start over, delete those vault files with the app closed. This cannot be undone. The in-app reset (Settings → Data) needs your master password to unlock first.
 
-## Branding
-
-The logo, icon, and intro video are in [`branding/`](branding/): a flat "D" with a keyhole on a desk line, in the app's steel blue and dark surface colors. `branding/PROMPTS.md` has prompts for recreating the logo and the animation with other tools.
-
 ## Project layout
 
 ```
-electron/          desktop main process, preload bridge, and encrypted vault code
-src/               React interface (App.tsx, styles.css, brands, Markdown)
+electron/               desktop main process, preload bridge, and encrypted vault code
+src/                    React interface (App.tsx, styles.css, brands, Markdown)
 src/brandCatalog.json   bundled logo set used for brand icons
-tests/             unit tests (vitest) and end-to-end tests (Playwright)
-scripts/           packaging helpers and the brand catalog generator
-outputs/           requirements, technical design, and handoff documents
+scripts/                packaging helpers and the brand catalog generator
 ```
 
 ## Testing
 
 - `npm test`: unit tests for the vault logic.
-- `npm run test:e2e`: browser and desktop tests. The `electron-website-icon` test needs internet access, because it fetches a real website icon.
+- `npm run test:e2e`: end-to-end tests with Playwright, including one that launches the desktop app. One of them fetches a real website icon, so it needs internet access.
 
 ## Security notes
 
