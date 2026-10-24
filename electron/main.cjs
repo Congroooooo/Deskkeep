@@ -9,15 +9,18 @@ let vault;
 let lastActivity = Date.now();
 const isDev = !app.isPackaged;
 let pendingCsv = null;
-const readableTypes = new Set(['credential', 'note', 'task', 'income', 'subscription', 'folder', 'activity']);
+const readableTypes = new Set(['credential', 'note', 'task', 'income', 'subscription', 'book', 'series', 'folder', 'activity']);
 const writableFields = {
   credential: ['id', 'title', 'username', 'password', 'website', 'notes', 'tags', 'folderId', 'favorite'],
   note: ['id', 'title', 'body', 'labels', 'folderId', 'favorite'],
   task: ['id', 'title', 'description', 'dueDate', 'priority', 'status', 'tags'],
   income: ['id', 'source', 'amountMinor', 'currency', 'date', 'category', 'notes'],
   subscription: ['id', 'name', 'provider', 'website', 'amountMinor', 'currency', 'billingCycle', 'nextPaymentDate', 'category', 'paymentMethod', 'notes', 'active'],
+  book: ['id', 'title', 'authors', 'isbn', 'publisher', 'publishedYear', 'language', 'series', 'seriesIndex', 'tags', 'category', 'status', 'pageCount', 'currentPage', 'startedDate', 'finishedDate', 'rating', 'review', 'notes', 'source', 'fileId', 'fileName', 'fileSize', 'favorite'],
+  series: ['id', 'title', 'kind', 'year', 'platform', 'url', 'status', 'totalSeasons', 'currentSeason', 'currentEpisode', 'lastWatched', 'rating', 'tags', 'review', 'notes', 'favorite'],
   folder: ['id', 'name', 'color', 'kind', 'favorite']
 };
+const MAX_PDF_BYTES = 200 * 1024 * 1024;
 
 function assertType(type, writable = false) {
   const allowed = writable ? Object.hasOwn(writableFields, type) : readableTypes.has(type);
@@ -269,6 +272,54 @@ handler('csv:commit', () => {
     vault.save('credential', { title: item.title, username: item.username, password: item.password, website: item.website, notes: item.notes, tags: item.tags, folderId: folder?.id, favorite: false });
   }
   const count = pendingCsv.length; pendingCsv = null; vault.activity('Credential CSV imported', `${count} records imported.`); return { count };
+});
+// Pull a readable title and author out of a typical downloaded filename, e.g.
+// "Some Title (Jane Doe) (z-library.sk, 1lib.sk, z-lib.sk).pdf". Source-site tags are dropped.
+function bookFromFileName(fileName) {
+  const base = fileName.replace(/\.pdf$/i, '');
+  const groups = [...base.matchAll(/\(([^()]*)\)/g)].map((m) => m[1].trim());
+  const isSourceTag = (text) => /(lib|\.sk|\.org|\.com|\.net|\.io)/i.test(text);
+  const authors = groups.filter((g) => g && !isSourceTag(g)).slice(0, 1);
+  const title = base.replace(/\s*\([^()]*\)/g, (m) => (isSourceTag(m) || authors.some((a) => m.includes(a)) ? '' : m)).replace(/\s+/g, ' ').trim();
+  return { title: cleanText(title || base, 200), authors: authors.map((a) => cleanText(a, 100)) };
+}
+// Rough page count from the PDF's page objects. Some files compress these, so the value can be 0.
+function estimatePdfPages(bytes) {
+  const text = bytes.toString('latin1');
+  const match = text.match(/\/Type\s*\/Pages[\s\S]{0,400}?\/Count\s+(\d+)/);
+  if (match) return Number(match[1]);
+  return (text.match(/\/Type\s*\/Page(?!s)/g) || []).length;
+}
+handler('book:import', async () => {
+  const result = await dialog.showOpenDialog(window, { title: 'Import a PDF book', properties: ['openFile'], filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const file = result.filePaths[0];
+  if (fs.statSync(file).size > MAX_PDF_BYTES) throw new Error('That PDF is larger than 200 MB.');
+  const bytes = fs.readFileSync(file);
+  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') throw new Error('That file is not a valid PDF.');
+  const fileName = path.basename(file);
+  const { title, authors } = bookFromFileName(fileName);
+  const fileId = vault.storeFile(fileName, bytes);
+  const book = vault.save('book', {
+    title, authors, format: 'PDF', fileId, fileName: cleanText(fileName, 300), fileSize: bytes.length,
+    pageCount: estimatePdfPages(bytes), currentPage: 0, status: 'To Read', favorite: false, tags: []
+  });
+  return { canceled: false, book };
+});
+// Returns the decrypted PDF bytes to the reader view only. Nothing is written to disk.
+handler('book:read', (id) => {
+  const book = vault.get('book', cleanText(id, 100));
+  if (!book.fileId) throw new Error('This book has no PDF stored.');
+  return vault.readFile(book.fileId);
+});
+handler('book:export', async (id) => {
+  const book = vault.get('book', cleanText(id, 100));
+  if (!book.fileId) throw new Error('This book has no PDF stored.');
+  const result = await dialog.showSaveDialog(window, { title: 'Export PDF', defaultPath: cleanText(book.fileName, 300) || 'book.pdf', filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  fs.writeFileSync(result.filePath, vault.readFile(book.fileId));
+  vault.activity('Book PDF exported', path.basename(result.filePath));
+  return { canceled: false, path: result.filePath };
 });
 handler('income:export-csv', async () => {
   const rows = vault.list('income');

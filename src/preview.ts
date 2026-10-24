@@ -157,6 +157,11 @@ export function installPreviewBridge() {
     inspectCsv: async () => ({ canceled: true }),
     commitCsv: async () => ({ count: 0 }),
     exportIncomeCsv: async () => ({}),
+    importBook: async () => ({ canceled: true }),
+    exportBook: async () => ({ canceled: true }),
+    readBook: async () => {
+      throw new Error("Reading PDFs needs the desktop app.");
+    },
     getSettings: async () => store.settings,
     updateSettings: async (input) => {
       store.settings = { ...store.settings, ...input };

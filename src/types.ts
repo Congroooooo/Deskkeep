@@ -1,4 +1,6 @@
-export type EntityType = 'credential' | 'note' | 'task' | 'income' | 'subscription' | 'folder' | 'activity' | 'settings';
+export type EntityType = 'credential' | 'note' | 'task' | 'income' | 'subscription' | 'book' | 'series' | 'folder' | 'activity' | 'settings';
+export type Book = Entity & { type: 'book'; title: string; authors: string[]; isbn: string; publisher: string; publishedYear: string; language: string; series: string; seriesIndex: string; tags: string[]; category: string; status: 'To Read' | 'Reading' | 'Finished' | 'Dropped'; pageCount: number; currentPage: number; startedDate: string; finishedDate: string; rating: number; review: string; notes: string; source: string; fileId?: string; fileName?: string; fileSize?: number; favorite: boolean };
+export type Series = Entity & { type: 'series'; title: string; kind: string; year: string; platform: string; url: string; status: 'Watching' | 'Up Next' | 'Completed' | 'On Hold' | 'Dropped' | 'Plan to Watch'; totalSeasons: number; currentSeason: number; currentEpisode: number; lastWatched: string; rating: number; tags: string[]; review: string; notes: string; favorite: boolean };
 export type Entity = { id: string; type: EntityType; createdAt: string; updatedAt: string; [key: string]: unknown };
 export type Credential = Entity & { type: 'credential'; title: string; username: string; password: string; website: string; notes: string; tags: string[]; folderId?: string; favorite: boolean };
 export type Note = Entity & { type: 'note'; title: string; body: string; labels: string[]; folderId?: string; favorite: boolean };
@@ -33,6 +35,9 @@ declare global {
       inspectCsv(): Promise<{ canceled?: boolean; count?: number; errors?: string[]; mapping?: Record<string,string|null>; preview?: Record<string, unknown>[] }>;
       commitCsv(): Promise<{ count: number }>;
       exportIncomeCsv(): Promise<{ path?: string }>;
+      importBook(): Promise<{ canceled: boolean; book?: Entity }>;
+      exportBook(id: string): Promise<{ canceled: boolean; path?: string }>;
+      readBook(id: string): Promise<Uint8Array>;
       getSettings(): Promise<DeskkeepSettings>;
       updateSettings(input: Partial<DeskkeepSettings>): Promise<DeskkeepSettings>;
       updateProfile(name: string): Promise<VaultState>;

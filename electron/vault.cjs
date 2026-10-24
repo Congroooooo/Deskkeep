@@ -52,6 +52,14 @@ class Vault {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS records_type ON records(type);
+      CREATE TABLE IF NOT EXISTS files (
+        id TEXT PRIMARY KEY,
+        nonce TEXT NOT NULL,
+        ciphertext TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
   }
 
@@ -201,8 +209,37 @@ class Vault {
     return entity;
   }
 
+  // Encrypted file blobs (for example book PDFs). Stored apart from records because records are capped in size.
+  storeFile(fileName, bytes) {
+    const key = this.requireKey();
+    const id = randomUUID();
+    const box = seal(key, bytes, `${id}:file`);
+    this.db.prepare('INSERT INTO files(id,nonce,ciphertext,tag,size,created_at) VALUES(?,?,?,?,?,?)')
+      .run(id, box.nonce, box.ciphertext, box.tag, bytes.length, new Date().toISOString());
+    this.activity('File stored', fileName);
+    return id;
+  }
+
+  readFile(id) {
+    const key = this.requireKey();
+    const row = this.db.prepare('SELECT * FROM files WHERE id=?').get(id);
+    if (!row) throw new Error('The stored file was not found.');
+    return open(key, row, `${row.id}:file`, true);
+  }
+
+  removeFile(id) {
+    this.requireKey();
+    this.db.prepare('DELETE FROM files WHERE id=?').run(id);
+  }
+
   remove(type, id) {
     this.requireKey();
+    if (type === 'book') {
+      try {
+        const book = this.get('book', id);
+        if (book.fileId) this.removeFile(book.fileId);
+      } catch { /* record already gone */ }
+    }
     this.db.prepare('DELETE FROM records WHERE id=? AND type=?').run(id, type);
     this.activity(`${type[0].toUpperCase()}${type.slice(1)} deleted`, id);
   }

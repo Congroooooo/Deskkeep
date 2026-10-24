@@ -42,11 +42,17 @@ import {
   List,
   Pause,
   Play,
+  BookOpen,
+  Tv,
+  Download,
 } from "lucide-react";
 import { brandForRecord } from "./brands";
 import { Markdown, markdownSnippet } from "./Markdown";
+import PdfReader from "./PdfReader";
 import type {
   Activity,
+  Book,
+  Series,
   Credential,
   Entity,
   EntityType,
@@ -67,6 +73,8 @@ type Page =
   | "calendar"
   | "income"
   | "subscriptions"
+  | "books"
+  | "series"
   | "folder"
   | "favorites"
   | "generator"
@@ -121,6 +129,45 @@ const blankSubscription = {
   paymentMethod: "",
   notes: "",
   active: true,
+};
+const blankBook = {
+  title: "",
+  authors: [] as string[],
+  isbn: "",
+  publisher: "",
+  publishedYear: "",
+  language: "",
+  series: "",
+  seriesIndex: "",
+  tags: [] as string[],
+  category: "",
+  status: "To Read",
+  pageCount: 0,
+  currentPage: 0,
+  startedDate: "",
+  finishedDate: "",
+  rating: 0,
+  review: "",
+  notes: "",
+  source: "",
+  favorite: false,
+};
+const blankSeries = {
+  title: "",
+  kind: "Series",
+  year: "",
+  platform: "Netflix",
+  url: "",
+  status: "Watching",
+  totalSeasons: 0,
+  currentSeason: 1,
+  currentEpisode: 1,
+  lastWatched: today(),
+  rating: 0,
+  tags: [] as string[],
+  review: "",
+  notes: "",
+  favorite: false,
 };
 const cycleFactor: Record<Subscription["billingCycle"], number> = {
   Weekly: 52 / 12,
@@ -202,6 +249,7 @@ export default function App() {
     value: Record<string, unknown>;
   } | null>(null);
   const [notice, setNotice] = useState("");
+  const [reader, setReader] = useState<Book | null>(null);
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), 3500);
@@ -320,6 +368,8 @@ export default function App() {
   const subscriptions = entities.filter(
     (e): e is Subscription => e.type === "subscription",
   );
+  const books = entities.filter((e): e is Book => e.type === "book");
+  const series = entities.filter((e): e is Series => e.type === "series");
   const folders = entities.filter((e): e is FolderType => e.type === "folder");
   const activities = entities.filter(
     (e): e is Activity => e.type === "activity",
@@ -375,13 +425,47 @@ export default function App() {
                 ? blankIncome
                 : type === "subscription"
                   ? blankSubscription
-                  : {
-                    name: "",
-                    color: "#6d8f84",
-                    kind: "credential",
-                    favorite: false,
-                  },
+                  : type === "book"
+                    ? blankBook
+                    : type === "series"
+                      ? blankSeries
+                      : {
+                        name: "",
+                        color: "#6d8f84",
+                        kind: "credential",
+                        favorite: false,
+                      },
     });
+  const importBook = async () => {
+    try {
+      const result = await window.deskkeep.importBook();
+      if (result.canceled || !result.book) return;
+      setNotice(`Imported “${String(result.book.title)}” into the encrypted vault.`);
+      await refresh();
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
+  // Closing the reader saves the page you stopped on, and moves a new book to Reading.
+  const closeReader = async (page: number) => {
+    const book = reader;
+    setReader(null);
+    if (!book || page === book.currentPage) return;
+    await save("book", {
+      ...book,
+      currentPage: page,
+      status: book.status === "To Read" ? "Reading" : book.status,
+      startedDate: book.startedDate || today(),
+    });
+  };
+  const exportBook = async (id: string) => {
+    try {
+      const result = await window.deskkeep.exportBook(id);
+      if (!result.canceled) setNotice("PDF exported. Note: the exported copy is not encrypted.");
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
+  };
   const pageTitle: Record<Page, string> = {
     dashboard: "Today in your Deskkeep",
     credential: "Credential vault",
@@ -390,6 +474,8 @@ export default function App() {
     calendar: "Calendar",
     income: "Income",
     subscriptions: "Subscriptions & licenses",
+    books: "Books",
+    series: "Series",
     folder: "Folders",
     favorites: "Favorites",
     generator: "Password generator",
@@ -402,8 +488,20 @@ export default function App() {
     "task",
     "income",
     "subscriptions",
+    "books",
+    "series",
     "folder",
   ].includes(page);
+  const addTarget: Record<string, EntityType> = {
+    subscriptions: "subscription",
+    books: "book",
+    series: "series",
+  };
+  const addLabel: Record<string, string> = {
+    credential: "login",
+    books: "book",
+    series: "series",
+  };
 
   return (
     <div className="app-shell">
@@ -462,14 +560,10 @@ export default function App() {
               <button
                 className="primary"
                 onClick={() =>
-                  openNew(
-                    page === "subscriptions"
-                      ? "subscription"
-                      : (page as EntityType),
-                  )
+                  openNew(addTarget[page] ?? (page as EntityType))
                 }
               >
-                <Plus size={17} /> Add {page === "credential" ? "login" : page}
+                <Plus size={17} /> Add {addLabel[page] ?? page}
               </button>
             )}
           </div>
@@ -579,6 +673,25 @@ export default function App() {
               remove={remove}
             />
           )}
+          {page === "books" && (
+            <Books
+              items={filtered(books)}
+              importPdf={importBook}
+              readPdf={(b) => setReader(b)}
+              exportPdf={exportBook}
+              edit={(v) => setEditor({ type: "book", value: v })}
+              save={save}
+              remove={remove}
+            />
+          )}
+          {page === "series" && (
+            <SeriesList
+              items={filtered(series)}
+              edit={(v) => setEditor({ type: "series", value: v })}
+              save={save}
+              remove={remove}
+            />
+          )}
           {page === "favorites" && (
             <Favorites
               credentials={credentials}
@@ -629,12 +742,22 @@ export default function App() {
           notes={notes}
           tasks={tasks}
           incomes={incomes}
+          books={books}
+          series={series}
           onClose={() => setPaletteOpen(false)}
           onPick={(target, term) => {
             setPaletteOpen(false);
             setPage(target);
             setQuery(term);
           }}
+        />
+      )}
+      {reader && (
+        <PdfReader
+          bookId={reader.id}
+          title={reader.title}
+          startPage={Number(reader.currentPage) || 1}
+          onClose={closeReader}
         />
       )}
       {editor && (
@@ -664,6 +787,8 @@ function CommandPalette({
   notes,
   tasks,
   incomes,
+  books,
+  series,
   onClose,
   onPick,
 }: {
@@ -672,6 +797,8 @@ function CommandPalette({
   notes: Note[];
   tasks: Task[];
   incomes: Income[];
+  books: Book[];
+  series: Series[];
   onClose: () => void;
   onPick: (target: Page, term: string) => void;
 }) {
@@ -714,8 +841,22 @@ function CommandPalette({
         target: "income" as Page,
         term: i.source,
       })),
+      ...books.map((b) => ({
+        key: b.id,
+        label: b.title,
+        sub: `Book · ${b.status}`,
+        target: "books" as Page,
+        term: b.title,
+      })),
+      ...series.map((s) => ({
+        key: s.id,
+        label: s.title,
+        sub: `Series · ${s.platform || "No platform"}`,
+        target: "series" as Page,
+        term: s.title,
+      })),
     ],
-    [pages, credentials, notes, tasks, incomes],
+    [pages, credentials, notes, tasks, incomes, books, series],
   );
   const q = term.trim().toLowerCase();
   const shown = items
@@ -737,7 +878,7 @@ function CommandPalette({
           <Search size={16} />
           <input
             autoFocus
-            placeholder="Search logins, notes, tasks, income, or pages"
+            placeholder="Search logins, notes, tasks, income, books, series, or pages"
             value={term}
             onChange={(e) => {
               setTerm(e.target.value);
@@ -898,6 +1039,8 @@ function Sidebar({
     ["task", "Tasks", Check],
     ["calendar", "Calendar", CalendarDays],
     ["income", "Income", CircleDollarSign],
+    ["books", "Books", BookOpen],
+    ["series", "Series", Tv],
   ];
   const tools: [Page, string, typeof Gauge][] = [
     ["folder", "Folders", Folder],
@@ -3021,6 +3164,18 @@ function Editor({
           value={String(v[key] || "")}
           onChange={(e) => setV({ ...v, [key]: e.target.value })}
         />
+      ) : kind === "int" ? (
+        <input
+          type="number"
+          min={0}
+          value={v[key] === undefined || v[key] === null ? "" : String(v[key])}
+          onChange={(e) =>
+            setV({
+              ...v,
+              [key]: e.target.value === "" ? 0 : Math.max(0, Math.round(Number(e.target.value))),
+            })
+          }
+        />
       ) : (
         <input
           type={kind}
@@ -3040,6 +3195,39 @@ function Editor({
           }
         />
       )}
+    </Field>
+  );
+  const listInput = (key: string, label: string) => (
+    <Field label={label}>
+      <input
+        value={Array.isArray(v[key]) ? (v[key] as string[]).join(", ") : ""}
+        onChange={(e) =>
+          setV({
+            ...v,
+            [key]: e.target.value
+              .split(",")
+              .map((x) => x.trim())
+              .filter(Boolean)
+              .slice(0, 30),
+          })
+        }
+      />
+    </Field>
+  );
+  const selectInput = (key: string, label: string, options: (string | number)[], fallback: string | number) => (
+    <Field label={label}>
+      <select
+        value={String(v[key] ?? fallback)}
+        onChange={(e) =>
+          setV({ ...v, [key]: typeof fallback === "number" ? Number(e.target.value) : e.target.value })
+        }
+      >
+        {options.map((x) => (
+          <option key={String(x)} value={String(x)}>
+            {typeof x === "number" && x === 0 ? "Unrated" : String(x)}
+          </option>
+        ))}
+      </select>
     </Field>
   );
   return (
@@ -3245,6 +3433,55 @@ function Editor({
                 </select>
               </Field>
               {input("notes", "Notes or license key reference", "textarea")}
+            </>
+          )}
+          {type === "book" && (
+            <>
+              {input("title", "Title")}
+              {listInput("authors", "Authors (comma separated)")}
+              {input("isbn", "ISBN")}
+              {input("publisher", "Publisher")}
+              {input("publishedYear", "Year published")}
+              {input("language", "Language")}
+              {input("category", "Genre or category")}
+              {input("series", "Book series")}
+              {input("seriesIndex", "Position in series")}
+              {selectInput("status", "Reading status", ["To Read", "Reading", "Finished", "Dropped"], "To Read")}
+              {input("pageCount", "Total pages", "int")}
+              {input("currentPage", "Current page", "int")}
+              {input("startedDate", "Started", "date")}
+              {input("finishedDate", "Finished", "date")}
+              {selectInput("rating", "Rating", [0, 1, 2, 3, 4, 5], 0)}
+              {input("source", "Where it came from")}
+              {listInput("tags", "Tags (comma separated)")}
+              {input("review", "Review", "textarea")}
+              {input("notes", "Notes", "textarea")}
+              {v.fileName ? (
+                <Field label="Stored PDF">
+                  <span className="quiet">
+                    {String(v.fileName)} ·{" "}
+                    {v.fileSize ? `${(Number(v.fileSize) / 1048576).toFixed(1)} MB` : ""} (encrypted in vault)
+                  </span>
+                </Field>
+              ) : null}
+            </>
+          )}
+          {type === "series" && (
+            <>
+              {input("title", "Show title")}
+              {selectInput("kind", "Kind", ["Series", "Limited Series", "Anime", "Documentary", "Movie"], "Series")}
+              {input("year", "Year")}
+              {input("platform", "Platform")}
+              {input("url", "Link")}
+              {selectInput("status", "Status", ["Watching", "Up Next", "Completed", "On Hold", "Dropped", "Plan to Watch"], "Watching")}
+              {input("currentSeason", "Current season", "int")}
+              {input("currentEpisode", "Current episode", "int")}
+              {input("totalSeasons", "Total seasons", "int")}
+              {input("lastWatched", "Last watched", "date")}
+              {selectInput("rating", "Rating", [0, 1, 2, 3, 4, 5], 0)}
+              {listInput("tags", "Tags (comma separated)")}
+              {input("review", "Review", "textarea")}
+              {input("notes", "Notes", "textarea")}
             </>
           )}
           {type === "folder" && (
@@ -3464,6 +3701,251 @@ function Subscriptions({
           <Empty
             title="No subscriptions tracked"
             copy="Add a plan, software license, or domain with its price and next payment date."
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+const bookStatusClass = (status: Book["status"]) =>
+  status === "Finished" ? "done" : status === "Reading" ? "soon" : status === "Dropped" ? "paused" : "";
+const stars = (n: number) => (n > 0 ? "★".repeat(n) + "☆".repeat(5 - n) : "Not rated");
+
+function Books({
+  items,
+  importPdf,
+  readPdf,
+  exportPdf,
+  edit,
+  save,
+  remove,
+}: {
+  items: Book[];
+  importPdf: () => void;
+  readPdf: (b: Book) => void;
+  exportPdf: (id: string) => void;
+  edit: (v: Book) => void;
+  save: (t: EntityType, v: Record<string, unknown>) => void;
+  remove: (t: EntityType, id: string) => void;
+}) {
+  const [status, setStatus] = useState<"all" | Book["status"]>("all");
+  const [sort, setSort] = useState<"recent" | "title" | "progress">("recent");
+  const shown = items
+    .filter((b) => status === "all" || b.status === status)
+    .sort((a, b) =>
+      sort === "title"
+        ? a.title.localeCompare(b.title)
+        : sort === "progress"
+          ? progressOf(b) - progressOf(a)
+          : String(b.updatedAt).localeCompare(String(a.updatedAt)),
+    );
+  const reading = items.filter((b) => b.status === "Reading").length;
+  const finished = items.filter((b) => b.status === "Finished").length;
+  const storedBytes = items.reduce((s, b) => s + Number(b.fileSize || 0), 0);
+  return (
+    <>
+      <div className="tally sub-summary">
+        <div className="stat-tile">
+          <span className="stat-label">Library</span>
+          <strong className="stat-money">{items.length} {items.length === 1 ? "book" : "books"}</strong>
+          <span className="stat-note">{items.filter((b) => b.fileId).length} with PDF</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-label">Reading now</span>
+          <strong className="stat-money">{reading}</strong>
+          <span className="stat-note">{finished} finished</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-label">Stored PDFs</span>
+          <strong className="stat-money">{(storedBytes / 1048576).toFixed(1)} MB</strong>
+          <span className="stat-note">encrypted in the vault</span>
+        </div>
+      </div>
+      <div className="filter-bar">
+        <select aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+          <option value="all">All books</option>
+          <option>To Read</option>
+          <option>Reading</option>
+          <option>Finished</option>
+          <option>Dropped</option>
+        </select>
+        <select aria-label="Sort" value={sort} onChange={(e) => setSort(e.target.value as typeof sort)}>
+          <option value="recent">Recently updated</option>
+          <option value="title">Title A–Z</option>
+          <option value="progress">Most progress</option>
+        </select>
+        <button onClick={importPdf}>
+          <Plus size={15} /> Import PDF
+        </button>
+        <span>{shown.length} records</span>
+      </div>
+      <div className="ruled-list wide">
+        {shown.map((b) => (
+          <div className="ledger-row media-row" key={b.id}>
+            <div className="media-mark" aria-hidden="true"><BookOpen size={18} /></div>
+            <div className="grow">
+              <strong>{b.title}</strong>
+              <span>
+                {(b.authors || []).join(", ") || "Unknown author"}
+                {b.series ? ` · ${b.series}${b.seriesIndex ? ` #${b.seriesIndex}` : ""}` : ""}
+                {b.publisher ? ` · ${b.publisher}` : ""}
+              </span>
+              {b.pageCount > 0 && (
+                <div className="progress-track" aria-label={`${progressOf(b)}% read`}>
+                  <i style={{ width: `${progressOf(b)}%` }} />
+                </div>
+              )}
+            </div>
+            <div className="media-side">
+              <span className={`due-badge ${bookStatusClass(b.status)}`}>{b.status}</span>
+              <small>
+                {b.pageCount > 0 ? `p. ${b.currentPage || 0} / ${b.pageCount}` : b.fileName ? "PDF" : "No file"}
+              </small>
+              <small>{stars(Number(b.rating || 0))}</small>
+            </div>
+            <button
+              className="pill-action"
+              onClick={() => save("book", { ...b, favorite: !b.favorite })}
+              aria-label={b.favorite ? `Unfavorite ${b.title}` : `Favorite ${b.title}`}
+            >
+              <Star size={14} /> {b.favorite ? "Pinned" : "Pin"}
+            </button>
+            {b.fileId && (
+              <button className="pill-action" onClick={() => readPdf(b)} aria-label={`Read ${b.title}`}>
+                <BookOpen size={14} /> Read
+              </button>
+            )}
+            {b.fileId && (
+              <button className="icon-button" aria-label={`Export PDF of ${b.title}`} onClick={() => exportPdf(b.id)}>
+                <Download size={16} />
+              </button>
+            )}
+            <button className="icon-button" aria-label={`Edit ${b.title}`} onClick={() => edit(b)}>
+              <MoreHorizontal size={16} />
+            </button>
+            <button className="icon-button danger-icon" aria-label={`Delete ${b.title}`} onClick={() => remove("book", b.id)}>
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+        {!shown.length && (
+          <Empty
+            title="No books yet"
+            copy="Import a PDF to store it encrypted in your vault, or add a book by hand."
+          />
+        )}
+      </div>
+    </>
+  );
+}
+
+const progressOf = (b: Book) =>
+  b.pageCount > 0 ? Math.min(100, Math.round(((b.currentPage || 0) / b.pageCount) * 100)) : 0;
+
+function SeriesList({
+  items,
+  edit,
+  save,
+  remove,
+}: {
+  items: Series[];
+  edit: (v: Series) => void;
+  save: (t: EntityType, v: Record<string, unknown>) => void;
+  remove: (t: EntityType, id: string) => void;
+}) {
+  const [status, setStatus] = useState<"all" | Series["status"]>("all");
+  const shown = items
+    .filter((s) => status === "all" || s.status === status)
+    .sort((a, b) => String(b.lastWatched || "").localeCompare(String(a.lastWatched || "")));
+  const watching = items.filter((s) => s.status === "Watching").length;
+  const completed = items.filter((s) => s.status === "Completed").length;
+  const upNext = items.filter((s) => s.status === "Up Next").length;
+  const nextUp = items.find((s) => s.status === "Watching") || items.find((s) => s.status === "Up Next");
+  const nextLabel = (s: Series) => `S${s.currentSeason || 1} · E${s.currentEpisode || 1}`;
+  const seasonsOf = (s: Series) =>
+    s.totalSeasons ? `of ${s.totalSeasons} ${s.totalSeasons === 1 ? "season" : "seasons"}` : "";
+  const nextEpisode = (s: Series) =>
+    save("series", {
+      ...s,
+      currentEpisode: (Number(s.currentEpisode) || 0) + 1,
+      status: s.status === "Up Next" || s.status === "Plan to Watch" ? "Watching" : s.status,
+      lastWatched: today(),
+    });
+  return (
+    <>
+      <div className="tally sub-summary">
+        <div className="stat-tile">
+          <span className="stat-label">Watching</span>
+          <strong className="stat-money">{watching}</strong>
+          <span className="stat-note">{upNext} up next</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-label">Completed</span>
+          <strong className="stat-money">{completed}</strong>
+          <span className="stat-note">of {items.length} tracked</span>
+        </div>
+        <div className="stat-tile">
+          <span className="stat-label">Continue with</span>
+          <strong className="stat-money">{nextUp ? nextUp.title : "None"}</strong>
+          <span className="stat-note">
+            {nextUp ? [nextLabel(nextUp), seasonsOf(nextUp)].filter(Boolean).join(" ") : "Add a show to start"}
+          </span>
+        </div>
+      </div>
+      <div className="filter-bar">
+        <select aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
+          <option value="all">All shows</option>
+          <option>Watching</option>
+          <option>Up Next</option>
+          <option>Completed</option>
+          <option>On Hold</option>
+          <option>Dropped</option>
+          <option>Plan to Watch</option>
+        </select>
+        <span>{shown.length} records</span>
+      </div>
+      <div className="ruled-list wide">
+        {shown.map((s) => (
+          <div className="ledger-row media-row" key={s.id}>
+            <div className="media-mark" aria-hidden="true"><Tv size={18} /></div>
+            <div className="grow">
+              <div className="title-line">
+                <strong>{s.title}</strong>
+                <span className={`due-badge ${s.status === "Completed" ? "done" : s.status === "Watching" ? "soon" : s.status === "Dropped" ? "paused" : ""}`}>
+                  {s.status}
+                </span>
+              </div>
+              <span>
+                {s.kind || "Series"} · {s.platform || "No platform"}
+                {s.year ? ` · ${s.year}` : ""}
+                {s.tags?.length ? ` · ${s.tags.join(", ")}` : ""}
+              </span>
+            </div>
+            <div className="media-side">
+              <strong>{nextLabel(s)}</strong>
+              {seasonsOf(s) && <small>{seasonsOf(s)}</small>}
+              <small>{s.lastWatched ? `Last watched ${s.lastWatched}` : "Not started"}</small>
+            </div>
+            <button
+              className="pill-action"
+              disabled={s.status === "Completed" || s.status === "Dropped"}
+              onClick={() => nextEpisode(s)}
+            >
+              +1 episode
+            </button>
+            <button className="icon-button" aria-label={`Edit ${s.title}`} onClick={() => edit(s)}>
+              <MoreHorizontal size={16} />
+            </button>
+            <button className="icon-button danger-icon" aria-label={`Delete ${s.title}`} onClick={() => remove("series", s.id)}>
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+        {!shown.length && (
+          <Empty
+            title="No series tracked"
+            copy="Add a show you are watching on Netflix or elsewhere, with the season and episode you are on."
           />
         )}
       </div>
