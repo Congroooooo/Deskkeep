@@ -11,6 +11,16 @@ test-results/
 ad/out/
 work/
 
+# Local-only project materials
+ad/
+branding/
+outputs/
+tests/
+DESIGN.md
+PRODUCT.md
+PROJECT_BRIEF.md
+playwright.config.ts
+
 # Local vault data and backups (never commit personal data)
 *.sqlite
 *.sqlite-wal
