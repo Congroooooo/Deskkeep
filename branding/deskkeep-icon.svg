@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
+  <title>Deskkeep icon</title>
+  <!-- Rounded tile in the app's dark surface color -->
+  <rect x="0" y="0" width="160" height="160" rx="36" fill="#17191d"/>
+  <!-- The "D": a desk-shaped letter, drawn in the app's steel blue -->
+  <path d="M46 36 H84 A44 44 0 0 1 84 124 H46 Z" fill="#477d98"/>
+  <!-- Keyhole cut into the D: the keep (vault) inside the desk -->
+  <circle cx="82" cy="72" r="10" fill="#17191d"/>
+  <rect x="78" y="78" width="8" height="22" rx="3" fill="#17191d"/>
+  <!-- Desk surface beneath -->
+  <rect x="26" y="132" width="108" height="6" rx="3" fill="#72a7bf"/>
+</svg>

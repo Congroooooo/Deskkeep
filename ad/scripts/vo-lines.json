@@ -1,0 +1,15 @@
+[
+  { "id": "01", "start": 0.6, "text": "Stop juggling apps." },
+  { "id": "02", "start": 2.65, "text": "Passwords in one place. Notes in another. Tasks, calendar, money, and renewals scattered everywhere." },
+  { "id": "03", "start": 10.35, "text": "Sound familiar?" },
+  { "id": "04", "start": 12.2, "text": "Meet Deskkeep. Your private workspace, kept local." },
+  { "id": "05", "start": 16.9, "text": "Everything you manage, on one desk." },
+  { "id": "06", "start": 19.9, "text": "Step one. Your vault. Copy any login, and it clears itself." },
+  { "id": "07", "start": 26.0, "text": "Step two. Write notes in Markdown. Import your files in one click." },
+  { "id": "08", "start": 31.7, "text": "Step three. Drag tasks across the board, from To Do to done." },
+  { "id": "09", "start": 36.8, "text": "Step four. A calendar that stays tidy, with plus N more on busy days." },
+  { "id": "10", "start": 42.6, "text": "Step five. Track every payment in, and never miss a renewal." },
+  { "id": "11", "start": 47.6, "text": "Plus: search everything with Control K, generate strong passwords, and keep world clocks." },
+  { "id": "12", "start": 54.1, "text": "Nothing leaves your computer. No cloud. No account. Works offline." },
+  { "id": "13", "start": 60.7, "text": "One desk. Every day. Deskkeep." }
+]

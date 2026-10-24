@@ -1,0 +1,28 @@
+# Dependencies (reinstall with npm install)
+node_modules/
+ad/node_modules/
+
+# Build and test output
+dist/
+release/
+out/
+playwright-report/
+test-results/
+ad/out/
+work/
+
+# Local vault data and backups (never commit personal data)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.dkbackup
+*.nook
+*.csv
+!ad/**/*.csv
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
