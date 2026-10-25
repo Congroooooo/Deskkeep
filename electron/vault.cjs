@@ -154,6 +154,85 @@ class Vault {
     return this.state();
   }
 
+  // Google Calendar secret iCal links, one per calendar. Sealed like the profile; the full URLs never reach the renderer.
+  calendarFeeds() {
+    const key = this.requireKey();
+    const meta = this.meta('vault');
+    const box = this.meta('calendarFeeds');
+    if (!box) {
+      // Migrate the single link saved by the earlier version.
+      const legacy = this.meta('calendarFeed');
+      if (!legacy) return [];
+      const old = open(key, legacy, `${meta.vaultId}:calendarFeed`);
+      const feeds = [{ id: randomUUID(), label: 'Google Calendar', url: old.url, savedAt: old.savedAt }];
+      this.writeFeeds(feeds);
+      this.meta('calendarFeed', null);
+      return feeds;
+    }
+    return open(key, box, `${meta.vaultId}:calendarFeeds`);
+  }
+
+  writeFeeds(feeds) {
+    const key = this.requireKey();
+    const meta = this.meta('vault');
+    this.meta('calendarFeeds', seal(key, feeds, `${meta.vaultId}:calendarFeeds`));
+  }
+
+  calendarFeedSummaries() {
+    return this.calendarFeeds().map(({ id, label, url, file, savedAt }) => ({
+      id,
+      label,
+      host: url ? new URL(url).hostname : `Imported file: ${file}`,
+      savedAt,
+    }));
+  }
+
+  // A calendar imported from an exported .ics file. It has no link, so it only updates when imported again.
+  addFileCalendar(label, file) {
+    const feeds = this.calendarFeeds();
+    if (feeds.length >= 12) throw new Error('You can connect up to 12 calendars.');
+    const feed = { id: randomUUID(), label, file, savedAt: new Date().toISOString() };
+    feeds.push(feed);
+    this.writeFeeds(feeds);
+    this.activity('Calendar imported', label);
+    return feed;
+  }
+
+  addCalendarFeed({ label, url }) {
+    const feeds = this.calendarFeeds();
+    if (feeds.length >= 12) throw new Error('You can connect up to 12 calendars.');
+    if (feeds.some((feed) => feed.url === url)) throw new Error('That calendar is already connected.');
+    feeds.push({ id: randomUUID(), label, url, savedAt: new Date().toISOString() });
+    this.writeFeeds(feeds);
+    this.activity('Calendar connected', label);
+    return this.calendarFeedSummaries();
+  }
+
+  removeCalendarFeed(id) {
+    const feeds = this.calendarFeeds();
+    const removed = feeds.find((feed) => feed.id === id);
+    this.writeFeeds(feeds.filter((feed) => feed.id !== id));
+    const cache = this.readCalendarEvents();
+    this.saveCalendarEvents({ syncedAt: cache.syncedAt, events: cache.events.filter((event) => event.feedId !== id) });
+    if (removed) this.activity('Calendar disconnected', removed.label);
+    return this.calendarFeedSummaries();
+  }
+
+  // Synced events from every connected calendar. Stored sealed; read-only in the app.
+  saveCalendarEvents(value) {
+    const key = this.requireKey();
+    const meta = this.meta('vault');
+    this.meta('calendarEvents', seal(key, value, `${meta.vaultId}:calendarEvents`));
+  }
+
+  readCalendarEvents() {
+    const key = this.requireKey();
+    const meta = this.meta('vault');
+    const box = this.meta('calendarEvents');
+    if (!box) return { syncedAt: null, events: [] };
+    return open(key, box, `${meta.vaultId}:calendarEvents`);
+  }
+
   changeMasterPassword(currentPassword, newPassword) {
     if (!newPassword || newPassword.length < 10) throw new Error('Use at least 10 characters for the new master password.');
     const meta = this.meta('vault');

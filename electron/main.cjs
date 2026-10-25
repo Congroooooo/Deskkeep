@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { randomInt } = require('node:crypto');
 const { Vault } = require('./vault.cjs');
+const ICAL = require('ical.js');
 
 let window;
 let vault;
@@ -130,6 +131,114 @@ handler('settings:update', (input) => {
   return vault.settings(safe);
 });
 handler('profile:update', (name) => vault.updateProfile(cleanText(name, 80)));
+// Google Calendar "Secret address in iCal format", one per calendar. Read-only: Deskkeep only ever fetches these links.
+const ICAL_FEED = /^https:\/\/calendar\.google\.com\/calendar\/ical\/\S+\.ics$/i;
+const MAX_FEED_BYTES = 5 * 1024 * 1024;
+const PAST_DAYS = 60;
+const FUTURE_DAYS = 400;
+const pad = (n) => String(n).padStart(2, '0');
+async function fetchFeed(url) {
+  const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(20000), headers: { 'user-agent': BROWSER_AGENT, accept: 'text/calendar' } });
+  if (!response.ok) throw new Error(response.status === 404 ? 'Link not found. Copy the Secret address in iCal format again.' : `Google answered ${response.status}.`);
+  if (Number(response.headers.get('content-length') || 0) > MAX_FEED_BYTES) throw new Error('This calendar is too large to import.');
+  const text = await response.text();
+  if (text.length > MAX_FEED_BYTES) throw new Error('This calendar is too large to import.');
+  if (!text.includes('BEGIN:VCALENDAR')) throw new Error('The link did not return calendar data.');
+  return text;
+}
+// Expands one calendar into dated events inside the sync window. Recurring events are expanded per occurrence.
+function expandFeed(text, feed, from, to) {
+  const root = new ICAL.Component(ICAL.parse(text));
+  const events = [];
+  for (const vevent of root.getAllSubcomponents('vevent')) {
+    // Single edited occurrences are covered by the expansion of their series.
+    if (vevent.getFirstProperty('recurrence-id')) continue;
+    const event = new ICAL.Event(vevent);
+    const add = (start, key) => {
+      const when = start.toJSDate();
+      const ms = when.getTime();
+      if (ms < from || ms > to) return;
+      const allDay = start.isDate;
+      events.push({
+        id: `${feed.id}:${event.uid}:${key}`,
+        feedId: feed.id,
+        feedLabel: feed.label,
+        title: cleanText(event.summary || '(no title)', 200),
+        location: cleanText(event.location || '', 300),
+        description: cleanText(event.description || '', 1000),
+        date: allDay ? `${start.year}-${pad(start.month)}-${pad(start.day)}` : `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`,
+        time: allDay ? '' : `${pad(when.getHours())}:${pad(when.getMinutes())}`,
+        allDay,
+      });
+    };
+    if (event.isRecurring()) {
+      const expansion = new ICAL.RecurExpansion({ component: vevent, dtstart: event.startDate });
+      for (let guard = 0; guard < 3000; guard++) {
+        const next = expansion.next();
+        if (!next) break;
+        const occurrence = event.getOccurrenceDetails(next);
+        if (occurrence.startDate.toJSDate().getTime() > to) break;
+        add(occurrence.startDate, occurrence.startDate.toString());
+      }
+    } else {
+      add(event.startDate, event.startDate.toString());
+    }
+  }
+  return events;
+}
+async function syncCalendars() {
+  const feeds = vault.calendarFeeds();
+  const cache = vault.readCalendarEvents();
+  const now = Date.now();
+  const from = now - PAST_DAYS * 864e5;
+  const to = now + FUTURE_DAYS * 864e5;
+  const events = [];
+  const errors = [];
+  for (const feed of feeds) {
+    // Imported files have no link to fetch; their events stay as imported.
+    if (!feed.url) {
+      events.push(...cache.events.filter((event) => event.feedId === feed.id));
+      continue;
+    }
+    try {
+      events.push(...expandFeed(await fetchFeed(feed.url), feed, from, to));
+    } catch (error) {
+      // Keep the last good copy of a calendar that failed this time.
+      errors.push({ feedId: feed.id, label: feed.label, message: String(error.message || error) });
+      events.push(...cache.events.filter((event) => event.feedId === feed.id));
+    }
+  }
+  const syncedAt = new Date().toISOString();
+  vault.saveCalendarEvents({ syncedAt, events });
+  return { syncedAt, count: events.length, errors };
+}
+handler('calendar:feeds', () => vault.calendarFeedSummaries());
+handler('calendar:feed-add', (input) => {
+  const label = cleanText(input?.label, 60).trim();
+  const url = cleanText(input?.url, 2000).trim();
+  if (!label) throw new Error('Give this calendar a name, for example "Work" or "Team Activities".');
+  if (!ICAL_FEED.test(url)) throw new Error('Paste the "Secret address in iCal format" from Google Calendar. It starts with https://calendar.google.com/calendar/ical/ and ends in .ics.');
+  return vault.addCalendarFeed({ label, url });
+});
+handler('calendar:import-ics', async (input) => {
+  const label = cleanText(input?.label, 60).trim();
+  if (!label) throw new Error('Give this calendar a name first.');
+  const result = await dialog.showOpenDialog(window, { title: 'Import a calendar (.ics)', properties: ['openFile'], filters: [{ name: 'Calendar', extensions: ['ics'] }] });
+  if (result.canceled || !result.filePaths[0]) return { canceled: true };
+  const file = result.filePaths[0];
+  if (fs.statSync(file).size > MAX_FEED_BYTES) throw new Error('That calendar file is too large to import.');
+  const text = fs.readFileSync(file, 'utf8');
+  if (!text.includes('BEGIN:VCALENDAR')) throw new Error('That file is not a calendar (.ics) file.');
+  const feed = vault.addFileCalendar(label, cleanText(path.basename(file), 200));
+  const now = Date.now();
+  const imported = expandFeed(text, feed, now - PAST_DAYS * 864e5, now + FUTURE_DAYS * 864e5);
+  const cache = vault.readCalendarEvents();
+  vault.saveCalendarEvents({ syncedAt: cache.syncedAt, events: [...cache.events, ...imported] });
+  return { canceled: false, count: imported.length, feeds: vault.calendarFeedSummaries() };
+});
+handler('calendar:feed-remove', (id) => vault.removeCalendarFeed(cleanText(id, 100)));
+handler('calendar:sync', () => syncCalendars());
+handler('calendar:events', () => vault.readCalendarEvents());
 handler('security:change-password', (input) => vault.changeMasterPassword(cleanText(input?.currentPassword, 1000), cleanText(input?.newPassword, 1000)));
 handler('security:rotate-recovery', () => vault.rotateRecoveryCode());
 handler('activity:clear', () => vault.clearActivity());

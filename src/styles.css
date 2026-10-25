@@ -3853,3 +3853,77 @@ input[type="color"] {
   word-break: break-all;
   line-height: 1.35;
 }
+
+/* Google Calendar import: connect form, feed list, read-only events */
+.cal-connect {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.cal-connect input {
+  min-width: 0;
+}
+@media (max-width: 760px) {
+  .cal-connect {
+    grid-template-columns: 1fr;
+  }
+}
+.cal-feed-list {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  width: 100%;
+}
+.cal-feed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.cal-feed-row > i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.cal-feed-row > div {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.cal-feed-row strong,
+.cal-feed-row > div > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cal-feed-row > div > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.cal-feed-error {
+  color: var(--danger) !important;
+}
+.cal-sync {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  align-self: center;
+}
+.cal-sync.warn {
+  color: var(--danger);
+}
+/* Calendar events from Google: a coloured edge marks them as read-only imports. */
+.event.feed {
+  border-left: 3px solid var(--primary);
+  padding-left: 6px;
+}
+
+/* Four controls in the connect row: name, link, add, import */
+.cal-connect {
+  grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr) auto auto;
+}

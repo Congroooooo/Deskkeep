@@ -29,7 +29,7 @@ writeFileSync(
 );
 
 // Only the native modules the main process loads at runtime. The interface is already bundled in dist/.
-const runtimeModules = ["better-sqlite3", "@node-rs/argon2", "@node-rs/argon2-win32-x64-msvc"];
+const runtimeModules = ["better-sqlite3", "@node-rs/argon2", "@node-rs/argon2-win32-x64-msvc", "ical.js"];
 for (const dep of runtimeModules) {
   cpSync(join(root, "node_modules", dep), join(app, "node_modules", dep), { recursive: true });
 }

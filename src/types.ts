@@ -9,7 +9,10 @@ export type Income = Entity & { type: 'income'; source: string; amountMinor: num
 export type Subscription = Entity & { type: 'subscription'; name: string; provider: string; website: string; amountMinor: number; currency: string; billingCycle: 'Monthly' | 'Quarterly' | 'Yearly' | 'Weekly'; nextPaymentDate: string; category: string; paymentMethod: string; notes: string; active: boolean };
 export type Folder = Entity & { type: 'folder'; name: string; color: string; kind: 'credential' | 'note'; favorite: boolean };
 export type Activity = Entity & { type: 'activity'; action: string; detail: string };
-export type VaultState = { exists: boolean; locked: boolean; displayName?: string; settings?: Record<string, unknown> };
+export type CalendarFeed = { id: string; label: string; host: string; savedAt: string };
+export type FeedEvent = { id: string; feedId: string; feedLabel: string; title: string; location: string; description: string; date: string; time: string; allDay: boolean };
+export type CalendarSyncResult = { syncedAt: string; count: number; errors: { feedId: string; label: string; message: string }[] };
+export type VaultState ={ exists: boolean; locked: boolean; displayName?: string; settings?: Record<string, unknown> };
 export type DeskkeepSettings = { theme: 'light'|'dark'; accent: 'blue'|'green'|'violet'; fontSize: 'compact'|'comfortable'|'large'; websiteIcons: boolean; autoLockMinutes: number; clipboardSeconds: number; profileAvatar?: string };
 
 declare global {
@@ -38,6 +41,12 @@ declare global {
       importBook(): Promise<{ canceled: boolean; book?: Entity }>;
       exportBook(id: string): Promise<{ canceled: boolean; path?: string }>;
       readBook(id: string): Promise<Uint8Array>;
+      calendarFeeds(): Promise<CalendarFeed[]>;
+      addCalendarFeed(input: { label: string; url: string }): Promise<CalendarFeed[]>;
+      removeCalendarFeed(id: string): Promise<CalendarFeed[]>;
+      importCalendarFile(label: string): Promise<{ canceled: boolean; count?: number; feeds?: CalendarFeed[] }>;
+      syncCalendars(): Promise<CalendarSyncResult>;
+      calendarEvents(): Promise<{ syncedAt: string | null; events: FeedEvent[] }>;
       getSettings(): Promise<DeskkeepSettings>;
       updateSettings(input: Partial<DeskkeepSettings>): Promise<DeskkeepSettings>;
       updateProfile(name: string): Promise<VaultState>;

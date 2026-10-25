@@ -52,6 +52,9 @@ import PdfReader from "./PdfReader";
 import type {
   Activity,
   Book,
+  CalendarFeed,
+  CalendarSyncResult,
+  FeedEvent,
   Series,
   Credential,
   Entity,
@@ -250,6 +253,11 @@ export default function App() {
   } | null>(null);
   const [notice, setNotice] = useState("");
   const [reader, setReader] = useState<Book | null>(null);
+  const [calFeeds, setCalFeeds] = useState<CalendarFeed[]>([]);
+  const [calEvents, setCalEvents] = useState<FeedEvent[]>([]);
+  const [calSynced, setCalSynced] = useState<string | null>(null);
+  const [calErrors, setCalErrors] = useState<CalendarSyncResult["errors"]>([]);
+  const [calSyncing, setCalSyncing] = useState(false);
   useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(""), 3500);
@@ -302,6 +310,29 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Calendar links and the last synced events (decrypted locally by the main process).
+  const loadCalendar = async () => {
+    const [feeds, cache] = await Promise.all([
+      window.deskkeep.calendarFeeds(),
+      window.deskkeep.calendarEvents(),
+    ]);
+    setCalFeeds(feeds);
+    setCalEvents(cache.events);
+    setCalSynced(cache.syncedAt);
+  };
+  // Fetches every connected calendar. A failing calendar keeps its last good events.
+  const syncCalendar = async () => {
+    setCalSyncing(true);
+    try {
+      const result = await window.deskkeep.syncCalendars();
+      setCalErrors(result.errors);
+      await loadCalendar();
+    } catch (e) {
+      setCalErrors([{ feedId: "", label: "Calendar", message: String((e as Error).message) }]);
+    } finally {
+      setCalSyncing(false);
+    }
+  };
   const refresh = async () => {
     const state = await window.deskkeep.state();
     setVault(state);
@@ -310,6 +341,7 @@ export default function App() {
       const next = await window.deskkeep.getSettings();
       setSettings(next);
       setTheme(next.theme);
+      await loadCalendar();
     }
   };
   const changeSettings = async (next: Partial<DeskkeepSettings>) => {
@@ -325,6 +357,15 @@ export default function App() {
       setEntities([]);
     });
   }, []);
+  // Sync when the vault unlocks, then every 15 minutes while it stays open.
+  useEffect(() => {
+    if (!vault.exists || vault.locked) return;
+    syncCalendar();
+    const id = window.setInterval(syncCalendar, 15 * 60 * 1000);
+    return () => window.clearInterval(id);
+    // syncCalendar only uses state setters, so it does not need to be a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault.exists, vault.locked]);
   const save = async (type: EntityType, value: Record<string, unknown>) => {
     try {
       await window.deskkeep.save(type, value);
@@ -640,6 +681,14 @@ export default function App() {
             <Calendar
               tasks={filtered(tasks)}
               incomes={filtered(incomes)}
+              feeds={calFeeds}
+              feedEvents={calEvents.filter((e) =>
+                JSON.stringify(e).toLowerCase().includes(query.toLowerCase()),
+              )}
+              syncedAt={calSynced}
+              syncing={calSyncing}
+              syncErrors={calErrors}
+              onSync={syncCalendar}
               edit={(type, value) => setEditor({ type, value })}
               remove={remove}
               addTask={(date) =>
@@ -731,6 +780,11 @@ export default function App() {
               update={changeSettings}
               onRefresh={refresh}
               onMessage={setNotice}
+              calFeeds={calFeeds}
+              calSynced={calSynced}
+              calErrors={calErrors}
+              calSyncing={calSyncing}
+              onSync={syncCalendar}
             />
           )}
         </div>
@@ -1948,11 +2002,16 @@ function Tasks({
 
 type CalItem =
   | { kind: "task"; task: Task }
-  | { kind: "income"; income: Income };
+  | { kind: "income"; income: Income }
+  | { kind: "feed"; event: FeedEvent; color: string };
+// One colour per connected calendar, so you can tell them apart at a glance.
+const FEED_COLORS = ["#3d746d", "#4a6fa5", "#b0793a", "#7b5ea7", "#a4505a", "#5b8c4a"];
 const calLabel = (item: CalItem) =>
   item.kind === "task"
     ? item.task.title
-    : money(item.income.amountMinor, item.income.currency);
+    : item.kind === "income"
+      ? money(item.income.amountMinor, item.income.currency)
+      : `${item.event.time ? `${item.event.time} ` : ""}${item.event.title}`;
 const longDate = (key: string) =>
   new Date(`${key}T00:00:00`).toLocaleDateString("en", {
     weekday: "long",
@@ -2005,12 +2064,14 @@ function DayDialog({
               className={`cal-dialog-row ${item.kind}`}
               onClick={() => onOpen(item)}
             >
-              <i />
+              <i style={item.kind === "feed" ? { background: item.color } : undefined} />
               <strong>{calLabel(item)}</strong>
               <span>
                 {item.kind === "task"
                   ? `Task · ${item.task.priority} · ${item.task.status}`
-                  : `Income · ${item.income.category}`}
+                  : item.kind === "income"
+                    ? `Income · ${item.income.category}`
+                    : `Calendar · ${item.event.feedLabel} · read-only`}
               </span>
             </button>
           ))}
@@ -2026,7 +2087,7 @@ function DayDialog({
   );
 }
 
-// Details for one task or income entry, with Edit and Delete.
+// Details for one task or income entry, with Edit and Delete. Calendar events are read-only.
 function EventDialog({
   item,
   onClose,
@@ -2035,8 +2096,8 @@ function EventDialog({
 }: {
   item: CalItem;
   onClose: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -2055,7 +2116,7 @@ function EventDialog({
         <header>
           <div>
             <span className="section-label">
-              {item.kind === "task" ? "Task" : "Income"}
+              {item.kind === "task" ? "Task" : item.kind === "income" ? "Income" : "Calendar · read-only"}
             </span>
             <h2>{calLabel(item)}</h2>
           </div>
@@ -2084,6 +2145,32 @@ function EventDialog({
               </div>
             )}
           </dl>
+        ) : item.kind === "feed" ? (
+          <dl className="cal-facts">
+            <div>
+              <dt>Date</dt>
+              <dd>
+                {longDate(item.event.date)}
+                {item.event.time ? ` · ${item.event.time}` : " · all day"}
+              </dd>
+            </div>
+            <div>
+              <dt>Calendar</dt>
+              <dd>{item.event.feedLabel}</dd>
+            </div>
+            {item.event.location && (
+              <div>
+                <dt>Location</dt>
+                <dd>{item.event.location}</dd>
+              </div>
+            )}
+            {item.event.description && (
+              <div className="wide">
+                <dt>Notes</dt>
+                <dd>{item.event.description}</dd>
+              </div>
+            )}
+          </dl>
         ) : (
           <dl className="cal-facts">
             <div>
@@ -2107,11 +2194,15 @@ function EventDialog({
           </dl>
         )}
         <footer>
-          <button className="danger" onClick={onDelete}>
-            Delete
-          </button>
+          {onDelete ? (
+            <button className="danger" onClick={onDelete}>
+              Delete
+            </button>
+          ) : (
+            <span />
+          )}
           <div>
-            <button onClick={onEdit}>Edit</button>
+            {onEdit && <button onClick={onEdit}>Edit</button>}
             <button className="primary" onClick={onClose}>
               Done
             </button>
@@ -2123,24 +2214,49 @@ function EventDialog({
 }
 
 function calItemKey(item: CalItem) {
-  return item.kind === "task" ? `t-${item.task.id}` : `i-${item.income.id}`;
+  return item.kind === "task"
+    ? `t-${item.task.id}`
+    : item.kind === "income"
+      ? `i-${item.income.id}`
+      : `f-${item.event.id}`;
 }
 
 function Calendar({
   tasks,
   incomes,
+  feeds,
+  feedEvents,
+  syncedAt,
+  syncing,
+  syncErrors,
+  onSync,
   addTask,
   edit,
   remove,
 }: {
   tasks: Task[];
   incomes: Income[];
+  feeds: CalendarFeed[];
+  feedEvents: FeedEvent[];
+  syncedAt: string | null;
+  syncing: boolean;
+  syncErrors: CalendarSyncResult["errors"];
+  onSync: () => void;
   addTask: (date: string) => void;
   edit: (type: EntityType, value: Record<string, unknown>) => void;
   remove: (type: EntityType, id: string) => void;
 }) {
   const [dayOpen, setDayOpen] = useState<string | null>(null);
   const [eventOpen, setEventOpen] = useState<CalItem | null>(null);
+  const colorOf = (feedId: string) => {
+    const index = feeds.findIndex((feed) => feed.id === feedId);
+    return FEED_COLORS[(index < 0 ? 0 : index) % FEED_COLORS.length];
+  };
+  const feedItems = (date: string): Extract<CalItem, { kind: "feed" }>[] =>
+    feedEvents
+      .filter((event) => event.date === date)
+      .sort((a, b) => a.time.localeCompare(b.time))
+      .map((event) => ({ kind: "feed" as const, event, color: colorOf(event.feedId) }));
   const itemsOn = (date: string): CalItem[] => [
     ...tasks
       .filter((t) => t.dueDate === date)
@@ -2148,6 +2264,7 @@ function Calendar({
     ...incomes
       .filter((v) => v.date === date)
       .map((income) => ({ kind: "income" as const, income })),
+    ...feedItems(date),
   ];
   const [cursor, setCursor] = useState(new Date());
   const [view, setView] = useState<"week" | "month" | "year">("month");
@@ -2207,6 +2324,23 @@ function Calendar({
           </h2>
         </div>
         <div className="calendar-actions">
+          {feeds.length > 0 && (
+            <span
+              className={`cal-sync ${syncErrors.length ? "warn" : ""}`}
+              title={syncErrors.map((e) => `${e.label}: ${e.message}`).join("\n")}
+            >
+              {syncErrors.length
+                ? `${syncErrors.length} calendar${syncErrors.length > 1 ? "s" : ""} could not sync`
+                : syncedAt
+                  ? `Synced ${new Date(syncedAt).toLocaleTimeString("en", { hour: "numeric", minute: "2-digit" })}`
+                  : "Not synced yet"}
+            </span>
+          )}
+          {feeds.length > 0 && (
+            <button onClick={onSync} disabled={syncing}>
+              {syncing ? "Syncing…" : "Sync now"}
+            </button>
+          )}
           <label className="view-select">
             <span className="sr-only">Calendar view</span>
             <select
@@ -2250,6 +2384,17 @@ function Calendar({
                       {money(v.amountMinor, v.currency)}
                     </i>
                   ))}
+                {feedItems(key).map((item) => (
+                  <button
+                    type="button"
+                    className="event feed"
+                    style={{ borderLeftColor: item.color }}
+                    key={calItemKey(item)}
+                    onClick={() => setEventOpen(item)}
+                  >
+                    {calLabel(item)}
+                  </button>
+                ))}
                 <button onClick={() => addTask(key)}>+ task</button>
               </section>
             );
@@ -2289,6 +2434,16 @@ function Calendar({
                 }{" "}
                 income entries
               </span>
+              {feedEvents.length > 0 && (
+                <span>
+                  {
+                    feedEvents.filter((e) =>
+                      e.date.startsWith(`${year}-${String(i + 1).padStart(2, "0")}`),
+                    ).length
+                  }{" "}
+                  calendar events
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -2326,7 +2481,8 @@ function Calendar({
                       <button
                         type="button"
                         key={calItemKey(item)}
-                        className={`event ${item.kind === "task" ? "task" : "cash"}`}
+                        className={`event ${item.kind === "task" ? "task" : item.kind === "income" ? "cash" : "feed"}`}
+                        style={item.kind === "feed" ? { borderLeftColor: item.color } : undefined}
                         onClick={() => setEventOpen(item)}
                       >
                         {calLabel(item)}
@@ -2367,20 +2523,28 @@ function Calendar({
         <EventDialog
           item={eventOpen}
           onClose={() => setEventOpen(null)}
-          onEdit={() => {
-            const target = eventOpen;
-            setEventOpen(null);
-            if (target.kind === "task")
-              edit("task", target.task as unknown as Record<string, unknown>);
-            else
-              edit("income", target.income as unknown as Record<string, unknown>);
-          }}
-          onDelete={async () => {
-            const target = eventOpen;
-            setEventOpen(null);
-            if (target.kind === "task") await remove("task", target.task.id);
-            else await remove("income", target.income.id);
-          }}
+          onEdit={
+            eventOpen.kind === "feed"
+              ? undefined
+              : () => {
+                  const target = eventOpen;
+                  setEventOpen(null);
+                  if (target.kind === "task")
+                    edit("task", target.task as unknown as Record<string, unknown>);
+                  else if (target.kind === "income")
+                    edit("income", target.income as unknown as Record<string, unknown>);
+                }
+          }
+          onDelete={
+            eventOpen.kind === "feed"
+              ? undefined
+              : async () => {
+                  const target = eventOpen;
+                  setEventOpen(null);
+                  if (target.kind === "task") await remove("task", target.task.id);
+                  else if (target.kind === "income") await remove("income", target.income.id);
+                }
+          }
         />
       )}
     </div>
@@ -2747,11 +2911,21 @@ function SettingsPage({
   update,
   onRefresh,
   onMessage,
+  calFeeds,
+  calSynced,
+  calErrors,
+  calSyncing,
+  onSync,
 }: {
   settings: DeskkeepSettings;
   update: (next: Partial<DeskkeepSettings>) => void;
   onRefresh: () => void;
   onMessage: (m: string) => void;
+  calFeeds: CalendarFeed[];
+  calSynced: string | null;
+  calErrors: CalendarSyncResult["errors"];
+  calSyncing: boolean;
+  onSync: () => void;
 }) {
   const [tab, setTab] = useState("appearance");
   const [phrase, setPhrase] = useState("");
@@ -2759,6 +2933,41 @@ function SettingsPage({
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [recoveryCode, setRecoveryCode] = useState("");
+  const [feedLabel, setFeedLabel] = useState("");
+  const [feedUrl, setFeedUrl] = useState("");
+  const [feedError, setFeedError] = useState("");
+  const addFeed = async () => {
+    try {
+      await window.deskkeep.addCalendarFeed({ label: feedLabel.trim(), url: feedUrl.trim() });
+      setFeedLabel("");
+      setFeedUrl("");
+      setFeedError("");
+      onMessage("Calendar connected. Syncing now.");
+      await onRefresh();
+      await onSync();
+    } catch (e) {
+      setFeedError(String((e as Error).message));
+    }
+  };
+  // Imports one exported .ics file. It is a snapshot: import it again to update it.
+  const importFile = async () => {
+    try {
+      const result = await window.deskkeep.importCalendarFile(feedLabel.trim());
+      if (result.canceled) return;
+      setFeedLabel("");
+      setFeedError("");
+      onMessage(`Imported ${result.count ?? 0} events. Import again to update them.`);
+      await onRefresh();
+    } catch (e) {
+      setFeedError(String((e as Error).message));
+    }
+  };
+  const removeFeed = async (feed: CalendarFeed) => {
+    if (!confirm(`Disconnect “${feed.label}”? Its events will be removed from the calendar.`)) return;
+    await window.deskkeep.removeCalendarFeed(feed.id);
+    onMessage(`${feed.label} disconnected.`);
+    await onRefresh();
+  };
   const importCsv = async () => {
     const result = await window.deskkeep.inspectCsv();
     if (result.canceled) return;
@@ -2783,7 +2992,7 @@ function SettingsPage({
   return (
     <div className="settings-layout">
       <nav>
-        {["account", "appearance", "security", "data", "about"].map((t) => (
+        {["account", "appearance", "security", "data", "calendar", "about"].map((t) => (
           <button
             className={tab === t ? "active" : ""}
             onClick={() => setTab(t)}
@@ -2841,6 +3050,96 @@ function SettingsPage({
                   </button>
                 )}
               </div>
+            </Setting>
+          </>
+        )}
+        {tab === "calendar" && (
+          <>
+            <h2>Google Calendar</h2>
+            <Setting
+              label="Connect a calendar"
+              copy="One link per calendar. In Google Calendar, open each calendar's settings and copy its Secret address in iCal format. Deskkeep reads events only, and nothing you add here is sent back to Google. Each link is stored encrypted in your vault."
+            >
+              <div className="cal-connect">
+                <input
+                  value={feedLabel}
+                  onChange={(e) => {
+                    setFeedLabel(e.target.value);
+                    setFeedError("");
+                  }}
+                  placeholder="Name, e.g. Nicko Balmes"
+                  aria-label="Calendar name"
+                  maxLength={60}
+                />
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={feedUrl}
+                  onChange={(e) => {
+                    setFeedUrl(e.target.value);
+                    setFeedError("");
+                  }}
+                  placeholder="https://calendar.google.com/calendar/ical/…/basic.ics"
+                  aria-label="Secret iCal address"
+                />
+                <button
+                  className="primary"
+                  disabled={!feedUrl.trim() || !feedLabel.trim()}
+                  onClick={addFeed}
+                >
+                  Add calendar
+                </button>
+                <button disabled={!feedLabel.trim()} onClick={importFile}>
+                  Import .ics file
+                </button>
+              </div>
+              {feedError && (
+                <p className="error" role="alert">
+                  {feedError}
+                </p>
+              )}
+            </Setting>
+            <Setting
+              label={`Connected calendars (${calFeeds.length})`}
+              copy={
+                calSynced
+                  ? `Last synced ${new Date(calSynced).toLocaleString("en")}. Deskkeep refreshes every 15 minutes while the vault is open.`
+                  : "Not synced yet."
+              }
+            >
+              {calFeeds.length === 0 ? (
+                <p className="quiet">No calendars connected.</p>
+              ) : (
+                <div className="cal-feed-list">
+                  {calFeeds.map((feed, index) => (
+                    <div className="cal-feed-row" key={feed.id}>
+                      <i style={{ background: FEED_COLORS[index % FEED_COLORS.length] }} />
+                      <div>
+                        <strong>{feed.label}</strong>
+                        <span>{feed.host}</span>
+                        {calErrors
+                          .filter((e) => e.feedId === feed.id)
+                          .map((e) => (
+                            <span className="cal-feed-error" key={e.message}>
+                              Could not sync: {e.message}
+                            </span>
+                          ))}
+                      </div>
+                      <button
+                        className="icon-button danger-icon"
+                        aria-label={`Disconnect ${feed.label}`}
+                        onClick={() => removeFeed(feed)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={onSync} disabled={calSyncing}>
+                    {calSyncing ? "Syncing…" : "Sync now"}
+                  </button>
+                </div>
+              )}
             </Setting>
           </>
         )}

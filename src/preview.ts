@@ -162,6 +162,14 @@ export function installPreviewBridge() {
     readBook: async () => {
       throw new Error("Reading PDFs needs the desktop app.");
     },
+    calendarFeeds: async () => [],
+    addCalendarFeed: async () => {
+      throw new Error("Calendar links need the desktop app.");
+    },
+    removeCalendarFeed: async () => [],
+    importCalendarFile: async () => ({ canceled: true }),
+    syncCalendars: async () => ({ syncedAt: new Date().toISOString(), count: 0, errors: [] }),
+    calendarEvents: async () => ({ syncedAt: null, events: [] }),
     getSettings: async () => store.settings,
     updateSettings: async (input) => {
       store.settings = { ...store.settings, ...input };
