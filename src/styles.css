@@ -455,6 +455,7 @@ button {
 .secret-cell code {
   width: 110px;
 }
+/* Long values wrap inside their cell (see the layered overrides at the end of this file). */
 .secret-cell button,
 .icon-button {
   display: grid;
@@ -3824,4 +3825,31 @@ input[type="color"] {
 /* Reading mode: inverts only the page pixels, so the toolbar and images keep their look. */
 .reader-page.is-night {
   filter: invert(0.9) hue-rotate(180deg);
+}
+
+/* Long credential values stay inside their row: the value wraps within its cell and the page never scrolls sideways. */
+.ruled-list.wide {
+  overflow-x: hidden;
+}
+.credential-row {
+  min-width: 0;
+}
+.credential-row > .grow {
+  min-width: 0;
+  flex: 1 1 0;
+}
+.secret-cell {
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 46%;
+}
+.secret-cell code {
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  line-height: 1.35;
 }
