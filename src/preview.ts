@@ -31,14 +31,20 @@ export function installPreviewBridge() {
   if (window.deskkeep) return;
   let store: PreviewStore;
   try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    // Older previews persisted this value. Remove it during migration; the
+    // preview PIN is deliberately session-only and never belongs in storage.
+    delete saved.revealPin;
     store = {
       ...defaults(),
-      ...JSON.parse(localStorage.getItem(storageKey) || "{}"),
+      ...saved,
     };
   } catch {
     store = defaults();
   }
+  let sessionRevealPin: string | null = null;
   const persist = () => localStorage.setItem(storageKey, JSON.stringify(store));
+  persist();
   const state = (): VaultState => ({
     exists: store.exists,
     locked: store.locked,
@@ -47,6 +53,17 @@ export function installPreviewBridge() {
   });
   const requireUnlocked = () => {
     if (store.locked) throw new Error("The preview vault is locked.");
+  };
+  const requireRevealPin = (pin: string) => {
+    requireUnlocked();
+    if (!sessionRevealPin)
+      throw new Error("Set a reveal PIN in Security before accessing secrets.");
+    if (pin !== sessionRevealPin) throw new Error("The reveal PIN is incorrect.");
+  };
+  const publicRow = (row: Entity): Entity => {
+    if (row.type !== "credential") return row;
+    const { password: _password, ...safe } = row as Record<string, unknown>;
+    return safe as Entity;
   };
   const activity = (action: string, detail: string) => {
     if (store.locked) return;
@@ -75,6 +92,7 @@ export function installPreviewBridge() {
         masterPassword,
         recoveryCode: `PREVIEW-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
       };
+      sessionRevealPin = null;
       activity("Vault created", "Browser preview workspace initialized.");
       persist();
       return { recoveryCode: store.recoveryCode };
@@ -99,13 +117,15 @@ export function installPreviewBridge() {
     lock: async () => {
       activity("Vault locked", "Manual lock.");
       store.locked = true;
+      sessionRevealPin = null;
       persist();
     },
     list: async (type?: EntityType) => {
       requireUnlocked();
-      return type
+      const rows = type
         ? store.rows.filter((row) => row.type === type)
         : [...store.rows];
+      return rows.map(publicRow);
     },
     save: async (type, data) => {
       requireUnlocked();
@@ -118,13 +138,19 @@ export function installPreviewBridge() {
         createdAt: String(existing?.createdAt || now),
         updatedAt: now,
       } as Entity;
+      if (type === "credential" && existing?.type === "credential") {
+        const incomingPassword = data.password;
+        if (!(typeof incomingPassword === "string" && incomingPassword.length > 0)) {
+          item.password = existing.password;
+        }
+      }
       store.rows = store.rows.filter((row) => row.id !== item.id).concat(item);
       activity(
         `${type[0].toUpperCase()}${type.slice(1)} ${existing ? "updated" : "created"}`,
         String(data.title || data.name || data.source || "Item"),
       );
       persist();
-      return item;
+      return publicRow(item);
     },
     remove: async (type, id) => {
       requireUnlocked();
@@ -136,14 +162,34 @@ export function installPreviewBridge() {
       requireUnlocked();
       const item = store.rows.find((row) => row.type === type && row.id === id);
       if (!item) throw new Error("Item not found.");
-      return item;
+      return publicRow(item);
     },
-    revealCredential: async (id) =>
-      String(
+    hasRevealPin: async () => {
+      requireUnlocked();
+      return Boolean(sessionRevealPin);
+    },
+    setRevealPin: async ({ pin, currentPin }) => {
+      requireUnlocked();
+      if (!/^\d{4,8}$/.test(pin)) throw new Error("Use a 4–8 digit PIN.");
+      if (sessionRevealPin && currentPin !== sessionRevealPin)
+        throw new Error("The current reveal PIN is incorrect.");
+      sessionRevealPin = pin;
+    },
+    removeRevealPin: async (pin) => {
+      requireRevealPin(pin);
+      sessionRevealPin = null;
+    },
+    revealCredential: async (id, pin) => {
+      requireRevealPin(pin);
+      return String(
         (store.rows.find((row) => row.id === id) as Record<string, unknown>)
           ?.password || "",
-      ),
-    copyCredential: async () => {},
+      );
+    },
+    copyCredential: async (id, pin) => {
+      requireRevealPin(pin);
+      void id;
+    },
     generate: async ({ length }) =>
       `Deskkeep!${crypto
         .randomUUID()
@@ -152,7 +198,10 @@ export function installPreviewBridge() {
     copy: async () => {},
     exportBackup: async () => ({}),
     restoreBackup: async () => ({ restored: false }),
-    exportCsv: async () => ({}),
+    exportCsv: async (pin) => {
+      requireRevealPin(pin);
+      return {};
+    },
     csvTemplate: async () => ({}),
     inspectCsv: async () => ({ canceled: true }),
     commitCsv: async () => ({ count: 0 }),
@@ -221,6 +270,7 @@ export function installPreviewBridge() {
     reset: async (phrase) => {
       if (phrase !== "RESET DESKKEEP") throw new Error("Type RESET DESKKEEP exactly.");
       store = defaults();
+      sessionRevealPin = null;
       persist();
     },
     onLocked: () => () => {},

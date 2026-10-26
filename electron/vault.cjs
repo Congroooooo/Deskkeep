@@ -4,11 +4,31 @@ const { hashRawSync } = require('@node-rs/argon2');
 const fs = require('node:fs');
 
 const KDF = { memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32, algorithm: 2 };
+const REVEAL_PIN_KDF = { ...KDF };
+const REVEAL_PIN_COOLDOWN_AFTER = 3;
+const REVEAL_PIN_COOLDOWN_BASE_MS = 250;
+const REVEAL_PIN_COOLDOWN_MAX_MS = 8000;
+const REVEAL_PIN_MAX_FAILURES = 8;
 const b64 = (value) => Buffer.from(value).toString('base64');
 const unb64 = (value) => Buffer.from(value, 'base64');
 
+function validateRevealPin(pin) {
+  if (typeof pin !== 'string' || pin.length < 4 || pin.length > 8 || /[^0-9]/.test(pin)) throw new Error('The reveal PIN must be 4–8 ASCII digits.');
+  return pin;
+}
+
 function derive(secret, salt) {
   return hashRawSync(Buffer.from(secret, 'utf8'), { ...KDF, salt });
+}
+
+function deriveRevealPin(pin, salt) {
+  return hashRawSync(Buffer.from(pin, 'utf8'), { ...REVEAL_PIN_KDF, salt });
+}
+
+function redactCredential(entity) {
+  if (entity?.type !== 'credential') return entity;
+  const { password, token, key, ...safe } = entity;
+  return safe;
 }
 
 function seal(key, value, aad = '') {
@@ -33,6 +53,8 @@ class Vault {
     this.db = null;
     this.key = null;
     this.displayName = '';
+    this.revealPinFailures = 0;
+    this.revealPinBlockedUntil = 0;
     this.openDb();
   }
 
@@ -74,6 +96,7 @@ class Vault {
   setup({ masterPassword, displayName }) {
     if (this.meta('vault')) throw new Error('A vault already exists.');
     if (!masterPassword || masterPassword.length < 10) throw new Error('Use at least 10 characters for the master password.');
+    this.clearRevealPinFailures();
     const vdek = randomBytes(32);
     const masterSalt = randomBytes(16);
     const recoverySalt = randomBytes(16);
@@ -127,6 +150,99 @@ class Vault {
 
   lock() { if (this.key) this.activity('Vault locked', 'Manual or automatic lock.'); this.key = null; this.displayName = ''; }
   requireKey() { if (!this.key) throw new Error('The vault is locked.'); return this.key; }
+
+  hasRevealPin() {
+    return Boolean(this.meta('vault')?.revealPin);
+  }
+
+  revealPinVerifier() {
+    const key = this.requireKey();
+    const meta = this.meta('vault');
+    if (!meta?.revealPin) return null;
+    try {
+      return open(key, meta.revealPin, `${meta.vaultId}:revealPin`);
+    } catch {
+      throw new Error('The reveal PIN configuration is unavailable.');
+    }
+  }
+
+  allowRevealPinAttempt() {
+    if (Date.now() < this.revealPinBlockedUntil) throw new Error('Too many reveal PIN attempts. Try again shortly.');
+  }
+
+  recordRevealPinFailure() {
+    this.revealPinFailures = Math.min(REVEAL_PIN_MAX_FAILURES, this.revealPinFailures + 1);
+    if (this.revealPinFailures >= REVEAL_PIN_COOLDOWN_AFTER) {
+      const exponent = Math.min(this.revealPinFailures - REVEAL_PIN_COOLDOWN_AFTER, 5);
+      const delay = Math.min(REVEAL_PIN_COOLDOWN_MAX_MS, REVEAL_PIN_COOLDOWN_BASE_MS * (2 ** exponent));
+      this.revealPinBlockedUntil = Date.now() + delay;
+    }
+  }
+
+  clearRevealPinFailures() {
+    this.revealPinFailures = 0;
+    this.revealPinBlockedUntil = 0;
+  }
+
+  verifyRevealPin(pin) {
+    const stored = this.revealPinVerifier();
+    if (!stored) {
+      validateRevealPin(pin);
+      throw new Error('A reveal PIN has not been configured.');
+    }
+    this.allowRevealPinAttempt();
+    try {
+      validateRevealPin(pin);
+    } catch (error) {
+      this.recordRevealPinFailure();
+      throw error;
+    }
+    let derived;
+    let expected;
+    try {
+      derived = deriveRevealPin(pin, unb64(stored.salt));
+      expected = unb64(stored.verifier);
+    } catch {
+      throw new Error('The reveal PIN configuration is unavailable.');
+    }
+    if (derived.length !== expected.length || !timingSafeEqual(derived, expected)) {
+      this.recordRevealPinFailure();
+      throw new Error('The reveal PIN is incorrect.');
+    }
+    this.clearRevealPinFailures();
+    return true;
+  }
+
+  setRevealPin(input = {}) {
+    const pin = validateRevealPin(input?.pin);
+    const key = this.requireKey();
+    const meta = this.meta('vault');
+    if (meta?.revealPin) this.verifyRevealPin(input?.currentPin);
+    else if (input?.currentPin !== undefined) validateRevealPin(input.currentPin);
+    const salt = randomBytes(16);
+    meta.revealPin = seal(key, {
+      version: 1,
+      salt: b64(salt),
+      verifier: b64(deriveRevealPin(pin, salt)),
+      kdf: REVEAL_PIN_KDF,
+    }, `${meta.vaultId}:revealPin`);
+    this.meta('vault', meta);
+    return this.hasRevealPin();
+  }
+
+  removeRevealPin(pin) {
+    this.requireKey();
+    this.verifyRevealPin(pin);
+    const meta = this.meta('vault');
+    delete meta.revealPin;
+    this.meta('vault', meta);
+    return this.hasRevealPin();
+  }
+
+  revealCredential(id, pin) {
+    this.verifyRevealPin(pin);
+    return this.readRecord('credential', id).password;
+  }
 
   settings(next) {
     const key = this.requireKey();
@@ -264,28 +380,41 @@ class Vault {
     const rows = type ? this.db.prepare('SELECT * FROM records WHERE type=? ORDER BY updated_at DESC').all(type) : this.db.prepare('SELECT * FROM records ORDER BY updated_at DESC').all();
     return rows.map((row) => {
       const entity = open(key, row, `${row.id}:${row.type}`);
-      return entity.type === 'credential' && !includeSecrets ? { ...entity, password: undefined } : entity;
+      return entity.type === 'credential' && !includeSecrets ? redactCredential(entity) : entity;
     });
   }
 
-  get(type, id) {
+  readRecord(type, id) {
     const key = this.requireKey();
     const row = this.db.prepare('SELECT * FROM records WHERE id=? AND type=?').get(id, type);
     if (!row) throw new Error('The requested item was not found.');
     return open(key, row, `${row.id}:${row.type}`);
   }
 
+  get(type, id) {
+    return redactCredential(this.readRecord(type, id));
+  }
+
   save(type, data) {
     const key = this.requireKey();
     const now = new Date().toISOString();
     const id = typeof data.id === 'string' && data.id ? data.id : randomUUID();
-    const existing = this.db.prepare('SELECT created_at FROM records WHERE id=?').get(id);
-    const entity = { ...data, id, type, createdAt: existing?.created_at || now, updatedAt: now };
+    const existing = this.db.prepare('SELECT * FROM records WHERE id=?').get(id);
+    const preservePassword = type === 'credential' && existing?.type === 'credential' && data.password === undefined;
+    const existingCredential = preservePassword ? open(key, existing, `${existing.id}:${existing.type}`) : null;
+    const entity = {
+      ...data,
+      ...(preservePassword ? { password: existingCredential.password } : {}),
+      id,
+      type,
+      createdAt: existing?.created_at || now,
+      updatedAt: now,
+    };
     const box = seal(key, entity, `${id}:${type}`);
     this.db.prepare(`INSERT INTO records(id,type,nonce,ciphertext,tag,created_at,updated_at) VALUES(@id,@type,@nonce,@ciphertext,@tag,@createdAt,@updatedAt)
       ON CONFLICT(id) DO UPDATE SET type=excluded.type, nonce=excluded.nonce, ciphertext=excluded.ciphertext, tag=excluded.tag, updated_at=excluded.updated_at`).run({ id, type, ...box, createdAt: entity.createdAt, updatedAt: now });
     if (type !== 'activity') this.activity(`${type[0].toUpperCase()}${type.slice(1)} ${existing ? 'updated' : 'created'}`, String(data.title || data.name || data.source || 'Item'));
-    return entity;
+    return type === 'credential' ? redactCredential(entity) : entity;
   }
 
   // Encrypted file blobs (for example book PDFs). Stored apart from records because records are capped in size.
@@ -364,6 +493,7 @@ class Vault {
       fs.copyFileSync(staging, this.filePath);
       this.key = null;
       this.displayName = '';
+      this.clearRevealPinFailures();
       this.openDb();
       fs.rmSync(staging, { force: true });
       fs.rmSync(rollback, { force: true });
@@ -381,6 +511,7 @@ class Vault {
     for (const suffix of ['', '-wal', '-shm']) if (fs.existsSync(this.filePath + suffix)) fs.rmSync(this.filePath + suffix);
     this.key = null;
     this.displayName = '';
+    this.clearRevealPinFailures();
     this.openDb();
   }
 

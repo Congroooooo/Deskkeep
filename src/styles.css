@@ -1019,6 +1019,77 @@ button {
 .settings-layout dd {
   color: var(--muted);
 }
+.reveal-pin-card {
+  min-width: min(420px, 100%);
+  display: grid;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--paper) 55%, transparent);
+}
+.reveal-pin-card input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--raised);
+}
+.pin-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.status-dot.on { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 15%, transparent); }
+.pin-actions, .pin-dialog-actions { display: flex; gap: 8px; align-items: center; }
+.pin-actions button { margin: 0; }
+.pin-error { margin: 2px 0 0; font-size: 12px; }
+.pin-backdrop { z-index: 40; }
+.pin-dialog {
+  width: min(390px, 92vw);
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--line));
+  border-radius: 18px;
+  background: var(--raised);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .32);
+  animation: modal-in .28s var(--ease-out) both;
+}
+.pin-dialog-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 18px;
+  border-radius: 12px;
+  background: #e2eee7;
+  color: var(--primary2);
+}
+.pin-dialog h2 { margin: 5px 0 7px; letter-spacing: -.02em; }
+.pin-dialog > p { margin: 0 0 20px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.pin-input {
+  width: 100%;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  letter-spacing: .34em;
+  font-size: 20px;
+  text-align: center;
+}
+.pin-help { display: block; margin: 8px 0 16px; color: var(--muted); font-size: 11px; text-align: center; }
+.pin-dialog-actions { justify-content: flex-end; }
+.pin-dialog-actions button { border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: var(--raised); }
+.pin-dialog-actions .primary { border: 0; }
 .modal-backdrop {
   position: fixed;
   inset: 0;

@@ -5,7 +5,8 @@ STORY: Unlock one private workspace, scan its state immediately, and move among 
 FIRST VIEWPORT: A slim module rail anchors the left; the dashboard fills the remaining canvas with a dense overview and narrow status column.
 FORM: Reference-faithful productivity shell, preserving Deskkeep identity while adopting KeepR's compact desktop grammar.
 */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import {
   Activity as ActivityIcon,
   CalendarDays,
@@ -83,6 +84,10 @@ type Page =
   | "generator"
   | "activity"
   | "settings";
+type PinRequest = {
+  purpose: "reveal" | "copy" | "export";
+  run: (pin: string) => Promise<void>;
+};
 const today = () => new Date().toISOString().slice(0, 10);
 const money = (minor = 0, currency = "PHP") =>
   new Intl.NumberFormat("en-PH", { style: "currency", currency }).format(
@@ -264,6 +269,8 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [notice]);
   const [error, setError] = useState("");
+  const [pinRequest, setPinRequest] = useState<PinRequest | null>(null);
+  const [settingsTab, setSettingsTab] = useState("appearance");
   const [settings, setSettings] = useState<DeskkeepSettings>({
     theme: "light",
     accent: "blue",
@@ -395,6 +402,22 @@ export default function App() {
     if (!confirm("Delete this item permanently from the local vault?")) return;
     await window.deskkeep.remove(type, id);
     await refresh();
+  };
+  const requestSecretAction = async (
+    purpose: PinRequest["purpose"],
+    run: (pin: string) => Promise<void>,
+  ) => {
+    try {
+      if (!(await window.deskkeep.hasRevealPin())) {
+        setPage("settings");
+        setSettingsTab("security");
+        setNotice("Set a reveal PIN in Security before revealing, copying, or exporting secrets.");
+        return;
+      }
+      setPinRequest({ purpose, run });
+    } catch (e) {
+      setError(String((e as Error).message));
+    }
   };
 
   if (!vault.exists) return <Setup onDone={async()=>{setPage("dashboard");await refresh();}} />;
@@ -637,6 +660,7 @@ export default function App() {
               incomes={incomes}
               settings={settings}
               go={setPage}
+              requestSecretAction={requestSecretAction}
             />
           )}
           {page === "credential" && (
@@ -645,6 +669,7 @@ export default function App() {
               folders={folders.filter((f) => f.kind === "credential")}
               clipboardSeconds={settings.clipboardSeconds}
               websiteIcons={settings.websiteIcons}
+              requestSecretAction={requestSecretAction}
               edit={async (v) =>
                 setEditor({
                   type: "credential",
@@ -785,6 +810,8 @@ export default function App() {
               calErrors={calErrors}
               calSyncing={calSyncing}
               onSync={syncCalendar}
+              initialTab={settingsTab}
+              requestSecretAction={requestSecretAction}
             />
           )}
         </div>
@@ -812,6 +839,16 @@ export default function App() {
           title={reader.title}
           startPage={Number(reader.currentPage) || 1}
           onClose={closeReader}
+        />
+      )}
+      {pinRequest && (
+        <PinPrompt
+          purpose={pinRequest.purpose}
+          onClose={() => setPinRequest(null)}
+          onSubmit={async (pin) => {
+            await pinRequest.run(pin);
+            setPinRequest(null);
+          }}
         />
       )}
       {editor && (
@@ -1352,6 +1389,7 @@ function Dashboard({
   incomes,
   settings,
   go,
+  requestSecretAction,
 }: {
   name: string;
   subscriptions: Subscription[];
@@ -1361,6 +1399,7 @@ function Dashboard({
   incomes: Income[];
   settings: DeskkeepSettings;
   go: (p: Page) => void;
+  requestSecretAction: (purpose: "reveal" | "copy" | "export", run: (pin: string) => Promise<void>) => void;
 }) {
   const open = tasks.filter((t) => t.status !== "Completed");
   const overdue = open.filter((t) => t.dueDate < today());
@@ -1493,7 +1532,9 @@ function Dashboard({
                 className="icon-button"
                 aria-label={`Copy password for ${c.title}`}
                 onClick={() =>
-                  window.deskkeep.copyCredential(c.id, settings.clipboardSeconds)
+                  requestSecretAction("copy", (pin) =>
+                    window.deskkeep.copyCredential(c.id, pin),
+                  )
                 }
               >
                 <ClipboardCopy size={16} />
@@ -1607,6 +1648,7 @@ function Credentials({
   folders,
   clipboardSeconds,
   websiteIcons,
+  requestSecretAction,
   edit,
   remove,
 }: {
@@ -1614,6 +1656,7 @@ function Credentials({
   folders: FolderType[];
   clipboardSeconds: number;
   websiteIcons: boolean;
+  requestSecretAction: (purpose: "reveal" | "copy" | "export", run: (pin: string) => Promise<void>) => void;
   edit: (v: Credential) => void;
   remove: (t: EntityType, id: string) => void;
 }) {
@@ -1638,8 +1681,12 @@ function Credentials({
       const next = { ...secrets };
       delete next[id];
       setSecrets(next);
-    } else
-      setSecrets({ ...secrets, [id]: await window.deskkeep.revealCredential(id) });
+    } else {
+      requestSecretAction("reveal", async (pin) => {
+        const value = await window.deskkeep.revealCredential(id, pin);
+        setSecrets((current) => ({ ...current, [id]: value }));
+      });
+    }
   };
   return (
     <>
@@ -1698,7 +1745,9 @@ function Credentials({
               <button
                 aria-label="Copy password"
                 onClick={() =>
-                  window.deskkeep.copyCredential(c.id, clipboardSeconds)
+                  requestSecretAction("copy", (pin) =>
+                    window.deskkeep.copyCredential(c.id, pin),
+                  )
                 }
               >
                 <ClipboardCopy />
@@ -2906,6 +2955,88 @@ function ActivityLog({
   );
 }
 
+function PinPrompt({
+  purpose,
+  onClose,
+  onSubmit,
+}: {
+  purpose: "reveal" | "copy" | "export";
+  onClose: () => void;
+  onSubmit: (pin: string) => Promise<void>;
+}) {
+  const [pin, setPin] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    inputRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!/^\d{4,8}$/.test(pin) || busy) return;
+    const value = pin;
+    setPin("");
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit(value);
+    } catch (e) {
+      setMessage(String((e as Error).message));
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="modal-backdrop pin-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="pin-dialog" role="dialog" aria-modal="true" aria-labelledby="pin-dialog-title" onSubmit={submit}>
+        <div className="pin-dialog-icon"><Lock size={19} /></div>
+        <span className="section-label">SECRET VALUE</span>
+        <h2 id="pin-dialog-title">Enter your reveal PIN</h2>
+        <p>
+          {purpose === "copy"
+            ? "Confirm before copying this password to your clipboard."
+            : purpose === "export"
+              ? "Confirm before creating a plaintext CSV file containing your credential passwords."
+              : "Confirm before revealing this password on screen."}
+        </p>
+        <label className="sr-only" htmlFor="reveal-pin-prompt">Reveal PIN</label>
+        <input
+          ref={inputRef}
+          id="reveal-pin-prompt"
+          className="pin-input"
+          type="password"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          pattern="[0-9]{4,8}"
+          maxLength={8}
+          value={pin}
+          onChange={(e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 8)); setMessage(""); }}
+          placeholder="••••"
+          aria-describedby="pin-dialog-help"
+        />
+        <span id="pin-dialog-help" className="pin-help">4–8 digits · Press Escape to cancel</span>
+        {message && <p className="error pin-error" role="alert">{message}</p>}
+        <div className="pin-dialog-actions">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button className="primary" type="submit" disabled={busy || !/^\d{4,8}$/.test(pin)}>
+            {busy
+              ? "Checking…"
+              : purpose === "copy"
+                ? "Copy secret"
+                : purpose === "export"
+                  ? "Export plaintext CSV"
+                  : "Reveal secret"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function SettingsPage({
   settings,
   update,
@@ -2916,6 +3047,8 @@ function SettingsPage({
   calErrors,
   calSyncing,
   onSync,
+  initialTab,
+  requestSecretAction,
 }: {
   settings: DeskkeepSettings;
   update: (next: Partial<DeskkeepSettings>) => void;
@@ -2926,8 +3059,10 @@ function SettingsPage({
   calErrors: CalendarSyncResult["errors"];
   calSyncing: boolean;
   onSync: () => void;
+  initialTab?: string;
+  requestSecretAction: (purpose: "reveal" | "copy" | "export", run: (pin: string) => Promise<void>) => void;
 }) {
-  const [tab, setTab] = useState("appearance");
+  const [tab, setTab] = useState(initialTab || "appearance");
   const [phrase, setPhrase] = useState("");
   const [name, setName] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -2936,6 +3071,52 @@ function SettingsPage({
   const [feedLabel, setFeedLabel] = useState("");
   const [feedUrl, setFeedUrl] = useState("");
   const [feedError, setFeedError] = useState("");
+  const [revealPinConfigured, setRevealPinConfigured] = useState(false);
+  const [revealPin, setRevealPin] = useState("");
+  const [revealPinConfirm, setRevealPinConfirm] = useState("");
+  const [revealPinCurrent, setRevealPinCurrent] = useState("");
+  const [revealPinError, setRevealPinError] = useState("");
+  const [revealPinBusy, setRevealPinBusy] = useState(false);
+  useEffect(() => {
+    window.deskkeep.hasRevealPin().then(setRevealPinConfigured).catch(() => {});
+  }, []);
+  const pinDigits = (value: string) => value.replace(/\D/g, "").slice(0, 8);
+  const saveRevealPin = async () => {
+    if (!/^\d{4,8}$/.test(revealPin)) return setRevealPinError("Use 4–8 digits.");
+    if (revealPin !== revealPinConfirm) return setRevealPinError("The PINs do not match.");
+    setRevealPinBusy(true);
+    setRevealPinError("");
+    try {
+      await window.deskkeep.setRevealPin({
+        pin: revealPin,
+        ...(revealPinConfigured ? { currentPin: revealPinCurrent } : {}),
+      });
+      setRevealPinConfigured(true);
+      setRevealPin("");
+      setRevealPinConfirm("");
+      setRevealPinCurrent("");
+      onMessage(revealPinConfigured ? "Reveal PIN changed." : "Reveal PIN enabled.");
+    } catch (e) {
+      setRevealPinError(String((e as Error).message));
+    } finally {
+      setRevealPinBusy(false);
+    }
+  };
+  const removeRevealPin = async () => {
+    if (!revealPinCurrent) return setRevealPinError("Enter your current PIN to remove it.");
+    setRevealPinBusy(true);
+    setRevealPinError("");
+    try {
+      await window.deskkeep.removeRevealPin(revealPinCurrent);
+      setRevealPinConfigured(false);
+      setRevealPinCurrent("");
+      onMessage("Reveal PIN removed. Secret values cannot be revealed or copied until you set one again.");
+    } catch (e) {
+      setRevealPinError(String((e as Error).message));
+    } finally {
+      setRevealPinBusy(false);
+    }
+  };
   const addFeed = async () => {
     try {
       await window.deskkeep.addCalendarFeed({ label: feedLabel.trim(), url: feedUrl.trim() });
@@ -3218,6 +3399,63 @@ function SettingsPage({
           <>
             <h2>Security</h2>
             <Setting
+              label="Reveal PIN"
+              copy="Protects revealing and copying individual secret values. Deskkeep asks for this 4–8 digit PIN each time, separately from your master password."
+            >
+              <div className="reveal-pin-card">
+                <div className="pin-status" aria-live="polite">
+                  <span className={revealPinConfigured ? "status-dot on" : "status-dot"} />
+                  {revealPinConfigured ? "Enabled" : "Not set"}
+                </div>
+                {revealPinConfigured && (
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="current-password"
+                    maxLength={8}
+                    value={revealPinCurrent}
+                    onChange={(e) => setRevealPinCurrent(pinDigits(e.target.value))}
+                    placeholder="Current PIN"
+                    aria-label="Current reveal PIN"
+                  />
+                )}
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  maxLength={8}
+                  value={revealPin}
+                  onChange={(e) => {
+                    setRevealPin(pinDigits(e.target.value));
+                    setRevealPinError("");
+                  }}
+                  placeholder={revealPinConfigured ? "New PIN" : "Set a 4–8 digit PIN"}
+                  aria-label={revealPinConfigured ? "New reveal PIN" : "Reveal PIN"}
+                />
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  maxLength={8}
+                  value={revealPinConfirm}
+                  onChange={(e) => setRevealPinConfirm(pinDigits(e.target.value))}
+                  placeholder="Confirm PIN"
+                  aria-label="Confirm reveal PIN"
+                />
+                <div className="pin-actions">
+                  <button className="primary" disabled={revealPinBusy || revealPin.length < 4 || revealPinConfirm.length < 4} onClick={saveRevealPin}>
+                    {revealPinConfigured ? "Change PIN" : "Set PIN"}
+                  </button>
+                  {revealPinConfigured && (
+                    <button className="danger" disabled={revealPinBusy || !revealPinCurrent} onClick={removeRevealPin}>
+                      Remove PIN
+                    </button>
+                  )}
+                </div>
+                {revealPinError && <p className="error pin-error" role="alert">{revealPinError}</p>}
+              </div>
+            </Setting>
+            <Setting
               label="Auto-lock"
               copy="Lock automatically after inactivity."
             >
@@ -3364,8 +3602,10 @@ function SettingsPage({
                       "Export readable credential passwords to CSV? Anyone with the file can read them.",
                     )
                   ) {
-                    const r = await window.deskkeep.exportCsv();
-                    if (r.path) onMessage("Plaintext CSV exported.");
+                    requestSecretAction("export", async (pin) => {
+                      const r = await window.deskkeep.exportCsv(pin);
+                      if (r.path) onMessage("Plaintext CSV exported.");
+                    });
                   }
                 }}
               >

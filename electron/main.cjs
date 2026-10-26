@@ -34,6 +34,12 @@ function cleanText(value, max = 10000) {
   return String(value).slice(0, max);
 }
 
+function redactCredentialSecrets(entity) {
+  if (entity?.type !== 'credential') return entity;
+  const { password, token, key, ...safe } = entity;
+  return safe;
+}
+
 function sanitize(type, value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid record.');
   if (JSON.stringify(value).length > 256000) throw new Error('Record is too large.');
@@ -110,12 +116,15 @@ handler('vault:lock', () => { vault.lock(); window.webContents.send('vault:locke
 handler('data:list', (type) => vault.list(type === undefined ? undefined : assertType(type)));
 handler('data:save', (type, data) => vault.save(assertType(type, true), sanitize(type, data)));
 handler('data:remove', (type, id) => vault.remove(assertType(type, true), cleanText(id, 100)));
-handler('data:get', (type, id) => vault.get(assertType(type), cleanText(id, 100)));
-handler('credential:reveal', (id) => vault.get('credential', cleanText(id, 100)).password);
-handler('credential:copy', (id, clearAfterSeconds = 30) => {
-  const text = String(vault.get('credential', cleanText(id, 100)).password);
+handler('data:get', (type, id) => redactCredentialSecrets(vault.get(assertType(type), cleanText(id, 100))));
+handler('security:has-reveal-pin', () => vault.hasRevealPin());
+handler('security:set-reveal-pin', (input) => vault.setRevealPin(input));
+handler('security:remove-reveal-pin', (pin) => vault.removeRevealPin(pin));
+handler('credential:reveal', (id, pin) => vault.revealCredential(cleanText(id, 100), pin));
+handler('credential:copy', (id, pin) => {
+  const text = String(vault.revealCredential(cleanText(id, 100), pin));
   clipboard.writeText(text);
-  const seconds = Math.max(5, Math.min(120, Number(clearAfterSeconds) || 30));
+  const seconds = Math.max(5, Math.min(120, Number(vault.settings().clipboardSeconds) || 30));
   setTimeout(() => { if (clipboard.readText() === text) clipboard.clear(); }, seconds * 1000).unref();
 });
 handler('settings:get', () => vault.settings());
@@ -341,7 +350,8 @@ handler('backup:restore', async (masterPassword) => {
   window.webContents.send('vault:locked');
   return { restored: true };
 });
-handler('csv:export', async () => {
+handler('csv:export', async (pin) => {
+  vault.verifyRevealPin(pin);
   const rows = vault.list('credential', true);
   const result = await dialog.showSaveDialog(window, { title: 'Export plaintext credentials CSV', defaultPath: 'deskkeep-credentials.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
   if (!result.canceled && result.filePath) {
